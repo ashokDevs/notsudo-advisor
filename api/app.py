@@ -119,16 +119,22 @@ async def _startup() -> None:
 
 
 def _public_base(request: Request) -> str:
-    """Prefer configured APP_BASE_URL; else derive from the incoming request (online)."""
-    configured = (os.getenv("APP_BASE_URL") or "").strip()
-    if configured:
-        return configured.rstrip("/")
-    # Render injects this
-    render = (os.getenv("RENDER_EXTERNAL_URL") or "").strip()
-    if render:
-        return render.rstrip("/")
-    # Fall back to the request the browser actually used
-    return str(request.base_url).rstrip("/")
+    """Prefer configured APP_BASE_URL (origin only); else request host."""
+    # Always use origin-normalized config — never .../Dashboard.html
+    configured = app_base_url()
+    if configured and "localhost" not in configured:
+        return configured
+    # Fall back to the request the browser actually used (strip path)
+    origin = str(request.base_url).rstrip("/")
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(origin)
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}"
+    except Exception:
+        pass
+    return origin
 
 
 @app.post("/api/scan")
