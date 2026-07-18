@@ -72,5 +72,44 @@ def index(
     asyncio.run(_index_repo_async(directory, tenant, repo_url))
     typer.secho("Indexing complete!", fg=typer.colors.GREEN)
 
+async def _run_pipeline_async(advisory_id: str, repo_id: str) -> None:
+    # Build graph and state
+    from core.orchestration.graph import build_graph
+    from core.orchestration.state import AgentState
+    
+    graph = build_graph()
+    
+    state: AgentState = {
+        "advisory_id": advisory_id,
+        "repo_id": repo_id,
+        "commit_sha": "local-dev",
+        "package_name": None,
+        "vulnerable_ranges": [],
+        "vulnerable_symbols": ["template"],
+        "is_exposed": None,
+        "reachability_reasoning": None,
+        "retrieved_context": [],
+        "retrieval_iterations": 0,
+        "pr_draft": None
+    }
+    
+    logger.info("Running pipeline", advisory_id=advisory_id, repo_id=repo_id)
+    final_state = await graph.ainvoke(state)
+    
+    if final_state.get("is_exposed"):
+        typer.secho(f"\n[EXPOSED] Reasoning:\n{final_state.get('reachability_reasoning')}", fg=typer.colors.RED)
+        if pr := final_state.get("pr_draft"):
+            typer.secho(f"\nDraft PR:\nTitle: {pr['title']}\nBody:\n{pr['body']}", fg=typer.colors.YELLOW)
+    else:
+        typer.secho(f"\n[NOT EXPOSED] Advisory {advisory_id} is not reachable.", fg=typer.colors.GREEN)
+
+@app.command()
+def run_pipeline(
+    advisory_id: str = typer.Argument(..., help="Advisory ID to run pipeline for"),
+    repo_id: str = typer.Argument(..., help="Repo ID to run pipeline against"),
+) -> None:
+    """Run the reachability pipeline deterministically for a single advisory and repo."""
+    asyncio.run(_run_pipeline_async(advisory_id, repo_id))
+
 if __name__ == "__main__":
     app()
