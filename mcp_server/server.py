@@ -9,6 +9,8 @@ logger = get_logger(__name__)
 
 mcp = FastMCP("notsudo", dependencies=["notsudo"])
 
+import mcp_server.tools # Registers tools
+
 def run_server() -> None:
     """Run the MCP server via stdio."""
     logger.info("Starting MCP server")
