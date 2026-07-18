@@ -1,209 +1,355 @@
 # NotSudo Advisor
 
-**Find dependency vulnerabilities that are actually reachable — and open a fix PR with cited evidence.**
+**Dependabot flags packages. NotSudo flags only what your code can actually hit — then opens (and optionally merges) a fix PR with cited evidence.**
 
-Most scanners flag *presence* of a vulnerable package. NotSudo reasons about **reachability**: does your code import and call the vulnerable path from production entry points?
+[![CI](https://github.com/ashokDevs/notsudo-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/ashokDevs/notsudo-advisor/actions/workflows/ci.yml)
+[![Live Demo](https://img.shields.io/badge/demo-live%20on%20Render-brightgreen)](https://notsudo-advisor.onrender.com/Dashboard.html)
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-see%20repo-lightgrey)](https://github.com/ashokDevs/notsudo-advisor)
 
+---
+
+## Links
+
+| | URL | Description |
+|--|-----|-------------|
+| **Live app** | [https://notsudo-advisor.onrender.com/Dashboard.html](https://notsudo-advisor.onrender.com/Dashboard.html) | Production dashboard — scan any public GitHub repo |
+| **Health** | [https://notsudo-advisor.onrender.com/api/health](https://notsudo-advisor.onrender.com/api/health) | Live config status (LLM, OAuth, PAT, auto-merge) |
+| **Landing** | [https://notsudo-advisor.onrender.com/](https://notsudo-advisor.onrender.com/) | Product landing page |
+| **Source** | [github.com/ashokDevs/notsudo-advisor](https://github.com/ashokDevs/notsudo-advisor) | Full codebase |
+| **Deploy guide** | [`docs/DEPLOY_ONLINE.md`](docs/DEPLOY_ONLINE.md) | Render / Docker / ngrok |
+| **Demo script** | [`docs/demo_script.md`](docs/demo_script.md) | 90-second pitch talk track |
+| **System design** | [`docs/system_design.md`](docs/system_design.md) | HLD, threat model, eval |
+| **Idea / product** | [`docs/idea.md`](docs/idea.md) | Framing & roadmap |
+| **OSV** | [osv.dev](https://osv.dev) | Advisory data source (no API key) |
+
+---
+
+## Description
+
+NotSudo is an **agentic dependency security advisor**. It:
+
+1. **Ingests** public vulnerability data from [OSV](https://osv.dev) for packages in `package.json` / lockfiles / Python manifests  
+2. **Matches versions** with proper semver / OSV ranges (not “present ⇒ vulnerable”)  
+3. **Finds call sites** in your source (imports + syntactic calls)  
+4. **Judges reachability** — `exposed` / `safe` / `unsure` — via heuristics or LLM (OpenRouter / OpenAI-compatible)  
+5. **Validates evidence quotes** against real file text (anti-hallucination)  
+6. **Opens a fix PR** on GitHub (scanned repo) and can **auto-merge** when configured  
+
+### Why it exists
+
+Most tools (Dependabot, basic SCA) report **presence**. Engineers mute them.  
+NotSudo answers: **can production code reach the vulnerable path?** and ships a **version bump PR** with evidence.
+
+---
+
+## Architecture
+
+### High-level system
+
+```mermaid
+flowchart TB
+  subgraph Users
+    U[Developer / Demo]
+  end
+
+  subgraph NotSudo["NotSudo Advisor (Render)"]
+    UI[Dashboard + Landing<br/>frontend/]
+    API[FastAPI<br/>api/app.py]
+    SCAN[Scanner pipeline<br/>core/analysis/]
+    AGENT[LangGraph agent<br/>triage → locate → reason → preflight → act]
+    MCP[MCP tools<br/>capability isolation]
+    LLM[LLM client<br/>OpenAI-compatible / OpenRouter]
+  end
+
+  subgraph External
+    OSV[OSV API<br/>api.osv.dev]
+    GH[GitHub API<br/>clone · PR · merge]
+    OR[OpenRouter / OpenAI]
+  end
+
+  U -->|HTTPS| UI
+  UI -->|/api/scan · /api/pr · OAuth| API
+  API --> SCAN
+  API --> AGENT
+  SCAN --> OSV
+  SCAN --> GH
+  SCAN --> LLM
+  AGENT --> MCP
+  AGENT --> LLM
+  MCP --> GH
+  LLM --> OR
+  API -->|fix PR / auto-merge| GH
 ```
-OSV advisories → semver match → call-site location → reachability verdict
-       → evidence-quote validation → lockfile preflight → fix PR
+
+### Scan & fix data flow
+
+```mermaid
+flowchart LR
+  A[GitHub URL or local path] --> B[Shallow clone / read tree]
+  B --> C[Parse package.json / lock / requirements]
+  C --> D[OSV querybatch + vuln details]
+  D --> E[Semver range gate]
+  E -->|not in range| S[safe]
+  E -->|in range| F[Find imports + call sites]
+  F --> G[Reachability<br/>LLM or heuristics]
+  G --> H{verdict}
+  H -->|exposed| I[Preflight + PR draft]
+  H -->|safe / unsure| J[Report only]
+  I --> K[GitHub fix PR]
+  K --> L{GITHUB_AUTO_MERGE?}
+  L -->|yes| M[Merge into default branch]
+  L -->|no| N[Human reviews PR]
 ```
+
+### LangGraph agent nodes
+
+```mermaid
+stateDiagram-v2
+  [*] --> triage
+  triage --> locate: dependency in range
+  triage --> act: not present / not in range
+  locate --> reason
+  reason --> locate: need more context (cap 2)
+  reason --> preflight: exposed
+  reason --> act: safe / unsure
+  preflight --> act
+  act --> [*]
+```
+
+| Node | Role |
+|------|------|
+| **triage** | Fetch advisory, match package + semver, early exit |
+| **locate** | Call-site / import discovery |
+| **reason** | Reachability + grounded evidence quotes |
+| **preflight** | Lockfile / manifest bump sanity |
+| **act** | Format PR; only this path may call side-effect tools |
+
+### Security: capability isolation
+
+Advisory text is **attacker-controlled**. Side-effecting tools (`pr_create`) are **not** available to nodes that ingest raw advisory prose.
+
+```mermaid
+flowchart TB
+  subgraph Untrusted
+    ADV[Advisory body from OSV/GHSA]
+  end
+
+  subgraph Read_only["Read-only nodes"]
+    T[triage]
+    L[locate]
+    R[reason]
+  end
+
+  subgraph Side_effects["Side-effect nodes only"]
+    A[act / draft_pr]
+  end
+
+  ADV -->|delimited as data| T
+  ADV -->|never raw in PR decision| A
+  T --> L --> R
+  R -->|structured verdict only| A
+  A -->|pr_create| GH[(GitHub API)]
+
+  style Side_effects fill:#2d4a3e,stroke:#3ecf8e
+  style Untrusted fill:#4a2d2d,stroke:#ef4444
+```
+
+Enforced in code: `core/security/capability_graph.py` · tested in `tests/unit/test_capability_graph.py`.
+
+### Repository layout
+
+```text
+notsudo-advisor/
+├── api/                 # FastAPI — scan, OAuth, PR, health
+├── frontend/            # Dashboard + landing (static HTML/JSX)
+├── core/
+│   ├── analysis/        # pipeline, semver, call sites, reachability, preflight
+│   ├── orchestration/   # LangGraph graph + nodes
+│   ├── security/        # TOOL_PERMISSIONS + CapabilityGraph
+│   ├── llm/             # OpenAI-compatible client (OpenRouter)
+│   ├── ingestion/       # OSV, chunker, repo/advisory ingesters
+│   └── action/          # PR body formatting
+├── mcp_server/          # MCP tools with authorize()
+├── cli/                 # notsudo scan | analyze | demo | run-pipeline
+├── demo_app/            # Intentionally outdated npm deps for demos
+├── eval/                # Ground-truth harness
+├── docs/                # Design + deploy docs
+├── Dockerfile           # Production image (includes git)
+└── render.yaml          # Render blueprint
+```
+
+---
+
+## Live demo walkthrough
+
+1. Open **[Dashboard](https://notsudo-advisor.onrender.com/Dashboard.html)** (free tier may take ~30–60s to wake)  
+2. Scan:
+   - `demo_app` (bundled vulnerable sample), or  
+   - `https://github.com/OWASP/NodeGoat`  
+3. Default filter: **exposed**  
+4. Expand a row → call sites `file:line` + reasoning  
+5. **Open fix PR** / **Apply fix (open + merge)** if `GITHUB_AUTO_MERGE=true`  
+6. PRs open on the **scanned GitHub repo** (not a random demo repo, unless you only scanned local `demo_app`)
+
+---
 
 ## Features
 
 | Feature | Status |
 |--------|--------|
-| OSV advisory lookup (npm + PyPI manifests) | ✅ |
-| Semver / OSV range matching (not “present ⇒ vulnerable”) | ✅ |
-| Import + syntactic call-site finder | ✅ |
-| Reachability verdicts: `exposed` / `safe` / `unsure` | ✅ |
-| Evidence quote grounding (hallucinated quotes rejected) | ✅ |
-| Two-tier LLM client (`cheap` / `frontier`) with heuristic fallback | ✅ |
-| Lockfile preflight (`npm install --package-lock-only`) | ✅ |
-| Local fix (`/api/fix-local`) + GitHub fix PRs (OAuth or `GITHUB_TOKEN`) | ✅ |
-| LangGraph agent: triage → locate → reason → preflight → act | ✅ |
-| MCP tool server with **capability isolation** | ✅ |
-| CLI: `scan`, `analyze`, `run-pipeline`, `index`, `watch-osv` | ✅ |
-| Dashboard UI scan + one-click PR | ✅ |
-| Structural capability-isolation tests | ✅ |
-| Eval harness with accuracy CI band | ✅ |
+| Live OSV scan (npm + PyPI manifests) | ✅ |
+| Semver / OSV range matching | ✅ |
+| Call-site finder (imports + calls) | ✅ |
+| Reachability: exposed / safe / unsure | ✅ |
+| LLM via OpenRouter / OpenAI-compatible API | ✅ |
+| Heuristic fallback without LLM key | ✅ |
+| Evidence quote validation | ✅ |
+| GitHub URL clone → scan → cleanup | ✅ |
+| Fix PR on **scanned** repo | ✅ |
+| Auto-merge (`GITHUB_AUTO_MERGE`) | ✅ |
+| GitHub OAuth Sign in | ✅ |
+| PAT (`GITHUB_TOKEN`) without browser login | ✅ |
+| Capability isolation tests | ✅ |
+| Docker + Render deploy | ✅ |
+| CLI + eval harness | ✅ |
 
-## Deploy online (public URL)
+---
 
-Full guide: **[`docs/DEPLOY_ONLINE.md`](docs/DEPLOY_ONLINE.md)**
+## Tech stack
 
-Short version (Render / Railway / Docker):
+| Layer | Technology |
+|-------|------------|
+| API | FastAPI, Uvicorn, Starlette sessions |
+| Agent | LangGraph, LangChain OpenAI client |
+| LLM | OpenRouter / any OpenAI-compatible base URL |
+| Data | OSV HTTP API, GitHub REST API |
+| Analysis | Pure Python semver, regex/call-site finder, tree-sitter chunker |
+| Optional DB | Postgres + pgvector (index / RAG path) |
+| Frontend | Static React-via-Babel JSX + CSS tokens |
+| Deploy | Docker on [Render](https://render.com) |
 
-1. Push repo to GitHub  
-2. Deploy with the included `Dockerfile`  
-3. Set env vars on the host: `OPENAI_API_KEY`, `OPENAI_API_BASE`, `GITHUB_TOKEN`, `GITHUB_DEMO_REPO`, `APP_BASE_URL=https://your-service...`, `SESSION_SECRET`  
-4. Online scans use **GitHub URLs** (`https://github.com/org/repo`) — not `D:\...` paths  
-5. Optional OAuth: callback `https://your-service.../auth/github/callback`  
-
-Quick tunnel from your PC:
-
-```bash
-ngrok http 8080
-# set APP_BASE_URL to the ngrok https URL and restart
-```
+---
 
 ## Quick start (local)
-
-### 1. Install
 
 ```bash
 # Python 3.12+
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS/Linux:
-# source .venv/bin/activate
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
 
 pip install -e ".[dev]"
 cp .env.example .env
-# Optional but recommended for best reachability reasoning:
-#   OPENAI_API_KEY=sk-...
-# Optional for GitHub PRs without OAuth UI:
-#   GITHUB_TOKEN=ghp_...
+# Edit .env — see Environment section below
+
+python -m uvicorn api.app:app --reload --port 8080
+# → http://127.0.0.1:8080/Dashboard.html
 ```
 
-### 2. Scan anything (local path **or** GitHub URL)
-
 ```bash
-# Bundled demo (outdated lodash/minimist/express + real call sites)
 python -m cli.main scan demo_app
-
-# Public GitHub repo — shallow clone → scan → cleanup
-python -m cli.main scan https://github.com/expressjs/express
-python -m cli.main scan expressjs/express
-
-# 90-second pitch (presence vs exposure + call sites)
+python -m cli.main scan https://github.com/OWASP/NodeGoat
 python -m cli.main demo
 ```
 
-Talk track: [`docs/demo_script.md`](docs/demo_script.md).
+---
 
-Example output lines:
+## Environment variables
 
-```
-[exposed] GHSA-...  lodash@4.17.20 → 4.17.21  conf=0.78
-  lodash is imported and called from production paths (src/server.js, src/utils.js)...
-```
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `APP_BASE_URL` | Online yes | Site origin, e.g. `https://notsudo-advisor.onrender.com` (**no** `/Dashboard.html`) |
+| `OPENAI_API_KEY` | For LLM | OpenRouter `sk-or-…` or OpenAI `sk-…` |
+| `OPENAI_API_BASE` | For OpenRouter | `https://openrouter.ai/api/v1` |
+| `LLM_MODEL` | Optional | e.g. `openrouter/auto` |
+| `GITHUB_TOKEN` | For PRs | Fine-grained PAT: **Contents + Pull requests = write** |
+| `GITHUB_DEMO_REPO` | Local demo PRs | Fallback when scanning local `demo_app` |
+| `GITHUB_CLIENT_ID` / `SECRET` | OAuth UI | GitHub OAuth App credentials |
+| `GITHUB_AUTO_MERGE` | Optional | `true` → open PR **and merge** |
+| `GITHUB_MERGE_METHOD` | Optional | `squash` (default) / `merge` / `rebase` |
+| `SESSION_SECRET` | Online yes | Long random string |
+| `NOTSUDO_HASH_EMBEDDINGS` | Optional | `1` skips heavy embedding model download |
 
-Without `OPENAI_API_KEY`, the system uses a **deterministic heuristic** (imports, call sites, severity, test-path filtering). With a key, the frontier model produces grounded evidence quotes.
+**OAuth callback (GitHub App settings):**  
+`https://notsudo-advisor.onrender.com/auth/github/callback`
 
-### 3. Single-advisory replay
+---
 
-```bash
-notsudo analyze GHSA-fvqr-27wr-82fm demo_app --package lodash
-```
-
-### 4. Full LangGraph agent
-
-```bash
-notsudo run-pipeline GHSA-fvqr-27wr-82fm demo_app
-```
-
-### 5. Web UI
-
-```bash
-make serve
-# open http://localhost:8080/Dashboard.html
-# Paste local path OR https://github.com/org/repo → Scan
-# Default filter = exposed (reachability-confirmed)
-# Expand a row → call sites file:line + evidence
-# Sign in with GitHub (OAuth) or set GITHUB_TOKEN to open fix PRs
-```
-
-### 6. Apply a local fix (no GitHub)
-
-```bash
-curl -X POST http://localhost:8080/api/fix-local \
-  -H "Content-Type: application/json" \
-  -d "{\"repo_path\": \"D:/Games/NOTSUDO/demo_app\", \"pkg\": \"lodash\", \"fix\": \"4.17.21\"}"
-```
-
-## Architecture
-
-```
-api/            FastAPI — scan, analyze, OAuth, PR, local fix
-cli/            Typer CLI
-core/analysis/  semver, call sites, evidence, reachability, preflight, pipeline
-core/orchestration/  LangGraph nodes + graph
-core/security/  CapabilityGraph + TOOL_PERMISSIONS
-core/llm/       two-tier LLM client
-mcp_server/     MCP tools (capability-checked)
-demo_app/       vulnerable target for demos/eval
-eval/           ground-truth harness
-frontend/       Landing + Dashboard
-```
-
-### Capability isolation
-
-Advisory text is attacker-controlled. Nodes that read advisory content (`triage`, `locate`, `reason`) **cannot** call `pr_create`. Only `act` / `draft_pr` may. Enforced by `core/security/capability_graph.py` and tested in `tests/unit/test_capability_graph.py`.
-
-### Grounded evidence
-
-Reachability answers that cite code must pass `EvidenceQuoteValidator`. Failed quotes trigger one retry, then collapse to `unsure`.
-
-## Environment
-
-See `.env.example`:
-
-| Variable | Purpose |
-|----------|---------|
-| `OPENAI_API_KEY` | LLM reachability + structured output |
-| `LLM_MODEL` / `LLM_CHEAP_MODEL` | Frontier / cheap models |
-| `GITHUB_TOKEN` | Open fix PRs without browser OAuth |
-| `GITHUB_CLIENT_ID` / `SECRET` | Dashboard “Sign in with GitHub” |
-| `GITHUB_DEMO_REPO` | `owner/name` for fix PRs |
-| `DATABASE_URL` | Postgres for index/RAG path |
-| `NOTSUDO_HASH_EMBEDDINGS=1` | Skip downloading BGE; use hash vectors |
-
-## Postgres (optional RAG index)
-
-```bash
-make up
-alembic upgrade head
-notsudo index demo_app
-```
-
-Scanning and fix flow work **without** Postgres. Indexing enables hybrid vector+FTS MCP `code_search`.
-
-## Tests
-
-```bash
-# unit + lightweight tests (no live OSV required for most)
-set NOTSUDO_HASH_EMBEDDINGS=1
-pytest tests/unit tests/test_smoke.py -q
-
-# live eval against OSV + demo_app (network)
-python -m eval.run
-```
-
-## API
+## API surface
 
 | Method | Path | Description |
 |--------|------|-------------|
-| POST | `/api/scan` | `{ "repo_path": "..." }` full analysis |
-| POST | `/api/analyze` | single advisory replay |
-| POST | `/api/fix-local` | bump version on disk |
-| POST | `/api/pr` | open GitHub fix PR (session or PAT) |
-| GET | `/api/health` | liveness + config flags |
-| GET | `/api/me` | OAuth user + config |
+| `GET` | `/api/health` | Live status (no secrets) |
+| `GET` | `/api/me` | Session user + config flags |
+| `GET` | `/api/github/status` | Can this token push/merge? |
+| `POST` | `/api/scan` | `{ "target": "owner/repo" \| path \| URL }` |
+| `POST` | `/api/pr` | Open fix PR (`auto_merge` optional) |
+| `GET` | `/auth/github/login` | Start OAuth |
+| `GET` | `/auth/github/callback` | OAuth return |
 
-## Limitations (honest)
+---
 
-- Call-site finder is **syntactic** (regex/AST-level), not a full JS call graph. Dynamic `obj[name]()` can be missed.
-- Without an LLM key, verdicts use severity + import/call heuristics.
-- Preflight needs `npm` (or `pip`) installed for full resolution checks; otherwise manifest patch validation only.
-- v1 ecosystems: **npm** first-class; **PyPI** manifests supported for scan/fix.
-- Auto-merge is intentionally **never** performed.
+## Deploy online
 
-## Docs
+```bash
+# Docker
+docker build -t notsudo .
+docker run --rm -p 8080:8080 --env-file .env \
+  -e APP_BASE_URL=https://your-host \
+  notsudo
+```
 
-Deeper design lives in `docs/` (`system_design.md`, `idea.md`, `coding_rules.md`, `tdd_design.md`, `commits.md`). `CLAUDE.md` is the operator guide for AI assistants.
+Or connect this repo to [Render](https://dashboard.render.com) with the included `Dockerfile` / `render.yaml`.  
+Details: **[docs/DEPLOY_ONLINE.md](docs/DEPLOY_ONLINE.md)**.
+
+---
+
+## Tests & quality
+
+```bash
+ruff check .
+mypy .
+pytest tests/unit tests/test_smoke.py -q
+```
+
+CI runs on every push to `main`: lint → mypy → pytest  
+→ [Actions](https://github.com/ashokDevs/notsudo-advisor/actions)
+
+---
+
+## Honest limitations
+
+- Call-site finding is **syntactic** (misses dynamic `obj[name]()` dispatch)  
+- Without an LLM key, verdicts use strong heuristics  
+- Online: scan **GitHub URLs**, not local disk paths like `D:\...`  
+- Fix PRs need write access on the **target** repo  
+- Free Render sleeps when idle — first request can be slow  
+
+---
+
+## Project docs
+
+| Document | Purpose |
+|----------|---------|
+| [`docs/idea.md`](docs/idea.md) | Product idea & scope |
+| [`docs/system_design.md`](docs/system_design.md) | Architecture deep dive |
+| [`docs/tdd_design.md`](docs/tdd_design.md) | Testing strategy |
+| [`docs/coding_rules.md`](docs/coding_rules.md) | Hard engineering rules |
+| [`docs/demo_script.md`](docs/demo_script.md) | Live demo script |
+| [`docs/DEPLOY_ONLINE.md`](docs/DEPLOY_ONLINE.md) | Production deploy |
+| [`CLAUDE.md`](CLAUDE.md) | Operator notes for AI assistants |
+
+---
 
 ## License
 
 See repository owner for license terms.
+
+---
+
+<p align="center">
+  <a href="https://notsudo-advisor.onrender.com/Dashboard.html"><strong>Open the live Dashboard →</strong></a>
+  ·
+  <a href="https://github.com/ashokDevs/notsudo-advisor">Star on GitHub</a>
+</p>
