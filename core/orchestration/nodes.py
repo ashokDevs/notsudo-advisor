@@ -1,146 +1,256 @@
-import json
+from __future__ import annotations
 
+from pathlib import Path
+from typing import Any
+
+from core.action.pr_creator import PRCreator
+from core.analysis.call_sites import CallSite, CallSiteFinder
+from core.analysis.pipeline import detect_packages, fetch_advisory
+from core.analysis.preflight import preflight_bump
+from core.analysis.reachability import advisory_to_severity, assess_reachability
+from core.analysis.semver import first_fixed_version, version_affected_by_ranges
+from core.analysis.symbols import extract_vulnerable_symbols
+from core.llm.client import get_llm_client
 from core.observability.logging import get_logger
 from core.orchestration.state import AgentState
-from mcp_server.tools import check_vulnerable_dependency, code_search
+from core.security.capability_graph import CapabilityGraph
 
 logger = get_logger(__name__)
+_caps = CapabilityGraph.from_permissions()
 
-async def triage_node(state: AgentState) -> AgentState:
-    """Triage advisory: extract package and check if present in repo."""
-    logger.info("Triaging advisory", advisory_id=state["advisory_id"])
-    
-    # In a real implementation we'd use an LLM or look up the DB directly.
-    # For now we'll simulate the extraction.
-    package_name = state.get("package_name") or "lodash"
-    
-    # Call MCP tool to check dependency
-    # Note: FastMCP tools are async functions that we can call directly in python if we pass kwargs
-    # but normally they're called over MCP protocol. Since we are in the same process we can just call them.
-    # A true MCP client would connect to the server.
-    is_present = await check_vulnerable_dependency(
-        repo_id=state["repo_id"],
-        commit_sha=state["commit_sha"],
-        package_name=package_name,
-        affected_ranges_json="[]"
-    )
-    
+
+def _repo(state: AgentState) -> Path:
+    path = state.get("repo_path")
+    if not path:
+        raise ValueError("repo_path is required on AgentState for analysis nodes")
+    return Path(path).expanduser().resolve()
+
+
+async def triage_node(state: AgentState) -> dict[str, Any]:
+    """Fetch advisory, match dependency + semver, early no-op when safe."""
+    _caps.authorize("triage", "advisory_query")
+    logger.info("triage", advisory_id=state.get("advisory_id"))
+
+    advisory_id = state["advisory_id"]
+    repo = _repo(state)
+    packages, ecosystem = detect_packages(repo)
+
+    vuln = await fetch_advisory(advisory_id)
+    package_name = state.get("package_name")
+    if not package_name:
+        for aff in vuln.get("affected") or []:
+            name = (aff.get("package") or {}).get("name")
+            if name:
+                package_name = str(name)
+                break
+    package_name = package_name or "unknown"
+
+    summary = str(vuln.get("summary") or "")
+    details = str(vuln.get("details") or "")
+    sev = advisory_to_severity(vuln)
+    ranges: list[dict[str, Any]] = []
+    for aff in vuln.get("affected") or []:
+        ranges.extend(aff.get("ranges") or [])
+    fixed = first_fixed_version(ranges)
+
+    info = packages.get(package_name)
+    if info is None:
+        for k, v in packages.items():
+            if k.lower() == package_name.lower():
+                info = v
+                package_name = k
+                break
+
+    nodes = list(state.get("nodes_run") or [])
+    nodes.append("triage")
+
+    if info is None:
+        return {
+            **state,
+            "package_name": package_name,
+            "ecosystem": ecosystem,
+            "summary": summary,
+            "details": details,
+            "severity": sev,
+            "vulnerable_ranges": ranges,
+            "fixed_version": fixed,
+            "is_exposed": False,
+            "verdict": "safe",
+            "confidence": 0.99,
+            "reachability_reasoning": f"Package {package_name} is not a direct dependency.",
+            "nodes_run": nodes,
+            "vulnerable_symbols": extract_vulnerable_symbols(package_name, summary, details, osv=vuln),
+        }
+
+    if ranges and not version_affected_by_ranges(info.version, ranges):
+        return {
+            **state,
+            "package_name": package_name,
+            "current_version": info.version,
+            "fixed_version": fixed,
+            "dep_type": info.dep_type,
+            "ecosystem": ecosystem,
+            "summary": summary,
+            "details": details,
+            "severity": sev,
+            "vulnerable_ranges": ranges,
+            "is_exposed": False,
+            "verdict": "safe",
+            "confidence": 0.95,
+            "reachability_reasoning": (
+                f"{package_name}@{info.version} is outside the affected range."
+            ),
+            "nodes_run": nodes + ["match_dependency"],
+            "vulnerable_symbols": extract_vulnerable_symbols(package_name, summary, details, osv=vuln),
+        }
+
+    symbols = extract_vulnerable_symbols(package_name, summary, details, osv=vuln)
     return {
         **state,
         "package_name": package_name,
-        "is_exposed": False if not is_present else None
+        "current_version": info.version,
+        "fixed_version": fixed,
+        "dep_type": info.dep_type,
+        "ecosystem": ecosystem,
+        "summary": summary,
+        "details": details,
+        "severity": sev,
+        "vulnerable_ranges": ranges,
+        "vulnerable_symbols": symbols,
+        "is_exposed": None,
+        "verdict": None,
+        "nodes_run": nodes + ["match_dependency"],
     }
 
-async def locate_node(state: AgentState) -> AgentState:
-    """Locate call sites of vulnerable symbols."""
-    logger.info("Locating call sites", package=state["package_name"])
-    
+
+async def locate_node(state: AgentState) -> dict[str, Any]:
+    """Locate import and call sites for the vulnerable package/symbols."""
+    _caps.authorize("locate", "locate_call_sites")
+    logger.info("locate", package=state.get("package_name"))
+
     if state.get("is_exposed") is False:
         return state
 
-    symbols = state.get("vulnerable_symbols", ["merge"])
-    query = f"calls to {state['package_name']} {symbols[0]}"
-    
-    results_str = await code_search(
-        repo_id=state["repo_id"],
-        commit_sha=state["commit_sha"],
-        query=query
+    repo = _repo(state)
+    package_name = state.get("package_name") or ""
+    symbols = list(state.get("vulnerable_symbols") or [])
+    finder = CallSiteFinder()
+    sites = finder.find(repo, package_name, symbols=symbols)
+    nodes = list(state.get("nodes_run") or [])
+    nodes.append("locate")
+
+    return {
+        **state,
+        "call_sites": [s.model_dump() for s in sites],
+        "retrieved_context": [s.model_dump() for s in sites],
+        "retrieval_iterations": int(state.get("retrieval_iterations") or 0) + 1,
+        "nodes_run": nodes,
+    }
+
+
+async def reason_node(state: AgentState) -> dict[str, Any]:
+    """Assess reachability with grounded evidence quotes."""
+    _caps.authorize("reason", "code_read")
+    logger.info("reason", package=state.get("package_name"))
+
+    if state.get("is_exposed") is False:
+        return state
+
+    repo = _repo(state)
+    raw_sites = state.get("call_sites") or state.get("retrieved_context") or []
+    sites = [CallSite.model_validate(s) for s in raw_sites if isinstance(s, dict)]
+
+    reach = await assess_reachability(
+        repo=repo,
+        package_name=state.get("package_name") or "unknown",
+        advisory_id=state.get("advisory_id") or "",
+        summary=state.get("summary") or "",
+        details=state.get("details") or "",
+        dep_type=state.get("dep_type") or "dep",
+        severity=state.get("severity") or "UNKNOWN",
+        symbols=list(state.get("vulnerable_symbols") or []),
+        sites=sites,
+        llm=get_llm_client(),
     )
-    results = json.loads(results_str)
-    
-    return {
-        **state,
-        "retrieved_context": results,
-        "retrieval_iterations": state.get("retrieval_iterations", 0) + 1
-    }
 
-async def reason_node(state: AgentState) -> AgentState:
-    """Reason about reachability based on located call sites."""
-    logger.info("Reasoning about reachability")
-    
-    if state.get("is_exposed") is False:
-        return state
-        
-    context = state.get("retrieved_context", [])
-    if not context:
-        return {
-            **state,
-            "is_exposed": False,
-            "reachability_reasoning": "No call sites found."
-        }
-        
-    import os
+    nodes = list(state.get("nodes_run") or [])
+    nodes.extend([n for n in reach.nodes if n not in nodes])
 
-    from langchain_core.messages import HumanMessage, SystemMessage
-    from langchain_openai import ChatOpenAI
-
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        logger.warning("OPENAI_API_KEY not found, falling back to simulation")
-        return {
-            **state,
-            "is_exposed": True,
-            "reachability_reasoning": "SIMULATION: Found vulnerable call site in retrieved context."
-        }
-
-    model = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4o"))
-    
-    context_str = "\n---\n".join([
-        f"File: {c['file_path']}\nSymbol: {c['symbol']}\nContent:\n{c['content']}"
-        for c in context
-    ])
-
-    prompt = f"""
-    Analyze if the vulnerability in {state['package_name']} ({state['advisory_id']}) is reachable in the following code context.
-    
-    Context:
-    {context_str}
-    
-    Respond in JSON format:
-    {{
-        "is_exposed": bool,
-        "reasoning": "string"
-    }}
-    """
-
-    try:
-        response = await model.ainvoke([
-            SystemMessage(content="You are a security expert analyzing reachability of vulnerabilities in code."),
-            HumanMessage(content=prompt)
-        ])
-        
-        # Simple extraction from JSON response
-        import re
-        content = str(response.content)
-        json_match = re.search(r"\{.*\}", content, re.DOTALL)
-        if json_match:
-            result = json.loads(json_match.group(0))
-            return {
-                **state,
-                "is_exposed": result.get("is_exposed", False),
-                "reachability_reasoning": result.get("reasoning", "LLM determined vulnerability reachability.")
-            }
-    except Exception as e:
-        logger.error("LLM reasoning failed", error=str(e))
+    is_exposed: bool | None
+    if reach.verdict == "exposed":
+        is_exposed = True
+    elif reach.verdict == "safe":
+        is_exposed = False
+    else:
+        is_exposed = None
 
     return {
         **state,
-        "is_exposed": True,
-        "reachability_reasoning": "Fallback: Reasoning inconclusive due to LLM error."
+        "is_exposed": is_exposed,
+        "verdict": reach.verdict,
+        "confidence": reach.confidence,
+        "reachability_reasoning": reach.reasoning,
+        "evidence_quotes": [q.model_dump() for q in reach.evidence_quotes],
+        "entrypoints": reach.entrypoints,
+        "need_more_context": False,
+        "nodes_run": nodes,
     }
 
-async def act_node(state: AgentState) -> AgentState:
-    """Decide on final action and draft PR if necessary."""
-    logger.info("Deciding final action")
-    
-    if state.get("is_exposed"):
-        pr_draft = {
-            "title": f"Bump {state['package_name']} to fix {state['advisory_id']}",
-            "body": state.get("reachability_reasoning", "")
-        }
+
+async def preflight_node(state: AgentState) -> dict[str, Any]:
+    """Run lockfile resolution preflight for the proposed bump."""
+    _caps.authorize("preflight", "preflight_lockfile")
+    logger.info("preflight", package=state.get("package_name"))
+
+    if state.get("is_exposed") is not True:
+        return {**state, "preflight_ok": None, "preflight_message": "skipped (not exposed)"}
+
+    fix = state.get("fixed_version")
+    pkg = state.get("package_name")
+    if not fix or not pkg:
         return {
             **state,
-            "pr_draft": pr_draft
+            "preflight_ok": False,
+            "preflight_message": "no fixed version known",
+            "nodes_run": list(state.get("nodes_run") or []) + ["preflight"],
         }
-        
-    return state
+
+    result = await preflight_bump(
+        _repo(state),
+        pkg,
+        fix,
+        ecosystem=state.get("ecosystem") or "npm",
+    )
+    return {
+        **state,
+        "preflight_ok": result.ok,
+        "preflight_message": result.message,
+        "nodes_run": list(state.get("nodes_run") or []) + ["preflight"],
+    }
+
+
+async def act_node(state: AgentState) -> dict[str, Any]:
+    """Draft PR only when exposed and preflight passed (or preflight skipped/unavailable)."""
+    _caps.authorize("act", "pr_create")
+    logger.info("act", exposed=state.get("is_exposed"))
+
+    nodes = list(state.get("nodes_run") or [])
+    nodes.append("act")
+
+    if state.get("is_exposed") is not True:
+        return {**state, "pr_draft": None, "nodes_run": nodes}
+
+    # Allow draft when preflight ok or not run; block only on explicit failure
+    if state.get("preflight_ok") is False:
+        return {
+            **state,
+            "pr_draft": None,
+            "reachability_reasoning": (
+                (state.get("reachability_reasoning") or "")
+                + f"\n\nPreflight failed: {state.get('preflight_message')}"
+            ),
+            "nodes_run": nodes,
+        }
+
+    draft = PRCreator.format_pr(state)
+    return {**state, "pr_draft": draft, "nodes_run": nodes}

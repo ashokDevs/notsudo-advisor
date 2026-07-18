@@ -72,39 +72,65 @@ function App() {
 
   const route = useHashRoute();
 
-  const [advisories, setAdvisories] = useState(ADVISORIES);
-  const [repoName, setRepoName]     = useState("acme/payments-api");
+  // Dynamic only — no hardcoded ADVISORIES sample data
+  const [advisories, setAdvisories] = useState([]);
+  const [repoName, setRepoName]     = useState("—");
+  const [scanMeta, setScanMeta]     = useState(null);
   const [scanning, setScanning]     = useState(false);
   const [scanError, setScanError]   = useState(null);
+  const [hasScanned, setHasScanned] = useState(false);
   const [drawer, setDrawer]         = useState(false);
+  const [health, setHealth]         = useState(null);
 
   const [me, setMe]           = useState(null);
   const [prState, setPrState] = useState({});
 
   useEffect(() => {
     fetch("/api/me").then(r => r.json()).then(setMe).catch(() => setMe({ user: null, configured: false }));
+    fetch("/api/health").then(r => r.json()).then(setHealth).catch(() => setHealth(null));
   }, []);
 
-  const handleScan = useCallback(async (repoPath) => {
+  const handleScan = useCallback(async (target) => {
     setScanning(true);
     setScanError(null);
     try {
       const res  = await fetch("/api/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ repo_path: repoPath }),
+        body: JSON.stringify({ target, repo_path: target }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "Scan failed");
-      if (data.advisories.length === 0) throw new Error(`No vulnerabilities found in ${data.repo} (${data.pkg_count} packages checked)`);
-      setAdvisories(data.advisories);
-      setRepoName(data.repo);
+      if (!res.ok) {
+        const detail = data.detail;
+        throw new Error(typeof detail === "string" ? detail : (detail && JSON.stringify(detail)) || "Scan failed");
+      }
+      setHasScanned(true);
+      setAdvisories(data.advisories || []);
+      setRepoName(data.display_name || data.repo || target);
+      setScanMeta({
+        summary: data.summary || null,
+        source: data.source,
+        github_url: data.github_url,
+        ecosystem: data.ecosystem,
+        pkg_count: data.pkg_count,
+        llm_enabled: data.llm_enabled,
+        llm_provider: data.llm_provider,
+        path: data.path,
+      });
+      if (!data.advisories || data.advisories.length === 0) {
+        setScanError(null); // not an error — clean scan
+      }
     } catch (e) {
       setScanError(e.message);
     } finally {
       setScanning(false);
     }
   }, []);
+
+  // Auto-run first live scan of demo_app so the UI is never static
+  useEffect(() => {
+    handleScan("demo_app");
+  }, [handleScan]);
 
   const openPR = useCallback(async (a) => {
     setPrState(s => ({ ...s, [a.id]: { status: "loading" } }));
@@ -116,6 +142,7 @@ function App() {
           id: a.id, pkg: a.pkg, current: a.current, fix: a.fix,
           verdict: a.verdict, confidence: a.confidence, reasoning: a.reasoning,
           quote: a.quote, quoteSource: a.quoteSource, entrypoints: a.entrypoints,
+          evidence_quotes: a.evidence_quotes || [],
         }),
       });
       const data = await res.json();
@@ -136,16 +163,17 @@ function App() {
         <div className={`dash-backdrop${drawer ? " show" : ""}`} onClick={() => setDrawer(false)} />
 
         <div className="dash-main">
-          <Header route={route} onToggle={() => setDrawer(d => !d)} me={me} />
+          <Header route={route} onToggle={() => setDrawer(d => !d)} me={me} repoName={repoName} />
 
           <div className="dash-content">
             {route === "advisories" && (
               <AdvisoriesPage
                 advisories={advisories} me={me} prState={prState} onOpenPR={openPR}
-                onScan={handleScan} scanning={scanning} scanError={scanError} />
+                onScan={handleScan} scanning={scanning} scanError={scanError}
+                scanMeta={scanMeta} repoName={repoName} health={health} hasScanned={hasScanned} />
             )}
             {route === "repos" && (
-              <ReposPage me={me} advisories={advisories} scanning={scanning} onScan={handleScan} />
+              <ReposPage me={me} advisories={advisories} scanning={scanning} onScan={handleScan} repoName={repoName} scanMeta={scanMeta} />
             )}
             {route === "security" && <SecurityPage />}
             {route === "settings" && <SettingsPage me={me} t={t} setTweak={setTweak} />}
@@ -219,7 +247,7 @@ function NavItem({ id, label, icon, active, onNavigate, badge }) {
 // ─────────────────────────────────────────────────────────────
 // HEADER
 // ─────────────────────────────────────────────────────────────
-function Header({ route, onToggle, me }) {
+function Header({ route, onToggle, me, repoName }) {
   return (
     <header className="dash-header">
       <button className="icon-btn hamburger" onClick={onToggle} aria-label="Toggle menu">
@@ -228,6 +256,9 @@ function Header({ route, onToggle, me }) {
 
       <div className="dash-crumb">
         <span className="dash-crumb__title">{PAGE_TITLES[route] || "Advisories"}</span>
+        {repoName && (
+          <span className="mono" style={{fontSize:12, color:"var(--text-muted)"}}>· {repoName}</span>
+        )}
       </div>
 
       <div style={{flex:1}} />
@@ -271,32 +302,154 @@ function GitHubAuth({ me }) {
 // ─────────────────────────────────────────────────────────────
 // PAGE: ADVISORIES
 // ─────────────────────────────────────────────────────────────
-function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, scanError }) {
+function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, scanError, scanMeta, repoName, health, hasScanned }) {
   return (
     <F>
+      <div className="hero-line mono">
+        Dependabot flags <em>packages</em>. NotSudo flags only what your code can <em>actually hit</em>.
+        <span style={{color:"var(--text-muted)"}}> · live OSV + clone · no static sample data</span>
+      </div>
+      <ConfigBar health={health} me={me} scanMeta={scanMeta} />
       <ScanBar onScan={onScan} scanning={scanning} error={scanError} />
+      {(hasScanned || (advisories && advisories.length > 0)) && (
+        <SummaryStrip advisories={advisories} scanMeta={scanMeta} repoName={repoName} />
+      )}
+      {scanning && advisories.length === 0 && (
+        <div className="mono empty-scan">Running live scan… querying OSV and reading source</div>
+      )}
+      {!scanning && hasScanned && advisories.length === 0 && (
+        <div className="mono empty-scan">
+          Scan complete — <strong>0 vulnerabilities</strong> on OSV for this tree ({scanMeta?.pkg_count ?? "?"} packages).
+          Try another target (e.g. OWASP/NodeGoat).
+        </div>
+      )}
       <AdvisoryTable advisories={advisories} me={me} prState={prState} onOpenPR={onOpenPR} />
     </F>
   );
 }
 
-function ScanBar({ onScan, scanning, error }) {
-  const [path, setPath] = useState("scratch/demo_repo");
-  const submit = (e) => { e.preventDefault(); if (path.trim()) onScan(path.trim()); };
+function ConfigBar({ health, me, scanMeta }) {
+  if (!health && !me) return null;
+  const llm = health?.llm || me?.llm_configured;
+  const provider = health?.llm_provider || me?.llm_provider || "none";
+  const model = health?.llm_model || me?.llm_model;
+  const oauth = health?.github_oauth || me?.configured;
+  const oauthPartial = health?.github_oauth_partial || (me?.oauth_client_id_set && !me?.oauth_secret_set);
+  const pat = health?.github_pat || me?.pat_configured;
+  const online = health?.online || me?.online;
+  const publicUrl = health?.public_url || me?.public_url;
   return (
-    <div className="scan-panel">
+    <div className="config-bar mono">
+      <span className={online ? "ok" : "dim"}>
+        {online ? `online · ${publicUrl || "https"}` : "local"}
+      </span>
+      <span className="sep">·</span>
+      <span className={llm ? "ok" : "dim"}>
+        LLM {llm ? `on · ${provider}${model ? ` · ${model}` : ""}` : "off (heuristics)"}
+      </span>
+      <span className="sep">·</span>
+      <span className={oauth ? "ok" : oauthPartial ? "warn" : "dim"}>
+        {oauth ? "GitHub OAuth ready" : oauthPartial ? "OAuth: missing CLIENT_SECRET" : "OAuth off"}
+      </span>
+      <span className="sep">·</span>
+      <span className={pat || (me && me.user) ? "ok" : "dim"}>
+        {me && me.user ? `signed in as ${me.user.login}` : pat ? "PAT ready for PRs" : "no PR write creds"}
+      </span>
+      {scanMeta?.llm_enabled != null && (
+        <>
+          <span className="sep">·</span>
+          <span className={scanMeta.llm_enabled ? "ok" : "dim"}>
+            last scan {scanMeta.llm_enabled ? "used LLM" : "used heuristics"}
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ScanBar({ onScan, scanning, error }) {
+  const [path, setPath] = useState("demo_app");
+  const submit = (e) => { e.preventDefault(); if (path.trim()) onScan(path.trim()); };
+  const quick = [
+    { label: "demo_app", value: "demo_app" },
+    { label: "NodeGoat (GitHub)", value: "https://github.com/OWASP/NodeGoat" },
+    { label: "express (GitHub)", value: "https://github.com/expressjs/express" },
+  ];
+  return (
+    <div className="scan-panel scan-panel--stack">
       <form onSubmit={submit} className="scan-form">
         <div className="scan-input">
           <span className="mono" style={{fontSize:12, color:"var(--text-muted)"}}>$</span>
           <input value={path} onChange={e => setPath(e.target.value)} spellCheck={false}
-                 placeholder="paste a local repo path — e.g. /Users/you/projects/my-app" />
+                 placeholder="local path · https://github.com/org/repo · or owner/repo" />
         </div>
         <button type="submit" disabled={scanning || !path.trim()} className="btn btn--primary btn--sm"
                 style={{whiteSpace:"nowrap", opacity: scanning ? 0.7 : 1}}>
-          {scanning ? <span className="caret">scanning</span> : "Scan repo →"}
+          {scanning ? <span className="caret">scanning</span> : "Scan →"}
         </button>
       </form>
+      <div className="scan-quick">
+        <span className="mono" style={{fontSize:11, color:"var(--text-muted)"}}>try:</span>
+        {quick.map(q => (
+          <button key={q.value} type="button" className="chip chip--sm"
+                  disabled={scanning}
+                  onClick={() => { setPath(q.value); onScan(q.value); }}>
+            {q.label}
+          </button>
+        ))}
+      </div>
+      {scanning && (
+        <span className="mono scan-hint">Cloning GitHub repos if needed · querying OSV · locating call sites…</span>
+      )}
       {error && <span className="mono" style={{fontSize:12, color:"var(--danger-2)"}}>✕&nbsp;{error}</span>}
+    </div>
+  );
+}
+
+function SummaryStrip({ advisories, scanMeta, repoName }) {
+  const counts = useMemo(() => {
+    if (scanMeta && scanMeta.summary) return scanMeta.summary;
+    return {
+      packages: scanMeta?.pkg_count ?? "—",
+      vulns: advisories.length,
+      exposed: advisories.filter(a => a.verdict === "exposed").length,
+      safe: advisories.filter(a => a.verdict === "safe").length,
+      unsure: advisories.filter(a => a.verdict === "unsure").length,
+      presence_noise: advisories.filter(a => a.verdict === "safe" || a.verdict === "unsure").length,
+    };
+  }, [advisories, scanMeta]);
+
+  return (
+    <div className="summary-strip">
+      <div className="summary-strip__head">
+        <span className="mono summary-strip__repo">{repoName || "repo"}</span>
+        {scanMeta?.source && (
+          <span className="pill" style={{fontSize:10}}>
+            <span className="dot" />{scanMeta.source === "github" ? "github clone" : "local path"}
+          </span>
+        )}
+        {scanMeta?.ecosystem && (
+          <span className="mono" style={{fontSize:11, color:"var(--text-muted)"}}>{scanMeta.ecosystem}</span>
+        )}
+        {scanMeta?.github_url && (
+          <a className="mono" style={{fontSize:11, color:"var(--primary-2)"}} href={scanMeta.github_url} target="_blank" rel="noreferrer">
+            view on GitHub ↗
+          </a>
+        )}
+      </div>
+      <div className="summary-strip__stats">
+        <div><b>{counts.packages}</b><span>packages</span></div>
+        <div><b>{counts.vulns}</b><span>OSV vulns</span><em className="summary-note">presence ceiling</em></div>
+        <div className="is-danger"><b>{counts.exposed}</b><span>exposed</span><em className="summary-note">fix these</em></div>
+        <div className="is-safe"><b>{counts.safe}</b><span>safe</span></div>
+        <div className="is-warn"><b>{counts.unsure}</b><span>unsure</span></div>
+      </div>
+      <div className="summary-strip__foot mono">
+        Presence-style noise: <strong>{counts.presence_noise ?? (counts.safe + counts.unsure)}</strong>
+        {" · "}
+        Reachability-confirmed: <strong style={{color:"var(--danger-2)"}}>{counts.exposed}</strong>
+        {" — only exposed opens a fix PR by default."}
+      </div>
     </div>
   );
 }
@@ -304,8 +457,9 @@ function ScanBar({ onScan, scanning, error }) {
 // ─────────────────────────────────────────────────────────────
 // PAGE: REPOSITORIES
 // ─────────────────────────────────────────────────────────────
-function ReposPage({ me, advisories, scanning, onScan }) {
-  const repo = (me && me.repo) || "ashokDevs/notsudo-demo-app";
+function ReposPage({ me, advisories, scanning, onScan, repoName, scanMeta }) {
+  const prTarget = (me && me.repo) || "ashokDevs/notsudo-demo-app";
+  const scanned = repoName || "—";
   const counts = useMemo(() => ({
     exposed: advisories.filter(a => a.verdict === "exposed").length,
     unsure:  advisories.filter(a => a.verdict === "unsure").length,
@@ -313,16 +467,18 @@ function ReposPage({ me, advisories, scanning, onScan }) {
   }), [advisories]);
 
   return (
-    <div style={{maxWidth:640}}>
+    <div style={{maxWidth:640, display:"flex", flexDirection:"column", gap:16}}>
       <div className="card repo-card">
         <div className="repo-card__head">
           <div style={{display:"flex", alignItems:"center", gap:10, minWidth:0}}>
             <GithubMark size={18} />
-            <span className="mono repo-card__name">{repo}</span>
+            <span className="mono repo-card__name">{scanned}</span>
           </div>
-          <a className="btn btn--sm" href={`https://github.com/${repo}`} target="_blank" rel="noreferrer">
-            View <Icon name="external" size={13} />
-          </a>
+          {scanMeta?.github_url && (
+            <a className="btn btn--sm" href={scanMeta.github_url} target="_blank" rel="noreferrer">
+              View <Icon name="external" size={13} />
+            </a>
+          )}
         </div>
 
         <div className="repo-card__stats">
@@ -333,14 +489,28 @@ function ReposPage({ me, advisories, scanning, onScan }) {
 
         <div className="repo-card__foot">
           <a className="btn btn--primary btn--sm" href="#/advisories"
-             onClick={() => onScan("scratch/demo_repo")}>
-            {scanning ? <span className="caret">scanning</span> : "Scan for advisories →"}
+             onClick={(e) => { e.preventDefault(); onScan("demo_app"); window.location.hash = "#/advisories"; }}>
+            {scanning ? <span className="caret">scanning</span> : "Rescan demo_app →"}
           </a>
-          <span className="mono" style={{fontSize:11, color:"var(--text-muted)"}}>npm · 4 dependencies</span>
+          <span className="mono" style={{fontSize:11, color:"var(--text-muted)"}}>
+            {scanMeta?.ecosystem || "npm"} · {scanMeta?.pkg_count ?? "?"} packages
+          </span>
         </div>
       </div>
 
-      <p className="mono empty-hint">Only the demo repo is connected. Sign in with GitHub to add your own.</p>
+      <div className="card repo-card">
+        <div className="set-card__label">Scan any public GitHub repo</div>
+        <p className="mono set-note" style={{marginBottom:12}}>
+          Paste <span style={{color:"var(--text-2)"}}>https://github.com/org/repo</span> on the Advisories page.
+          We shallow-clone, run OSV + reachability, then delete the temp copy.
+        </p>
+        <button className="btn btn--sm" disabled={scanning}
+                onClick={() => { onScan("https://github.com/expressjs/express"); window.location.hash = "#/advisories"; }}>
+          Try expressjs/express →
+        </button>
+      </div>
+
+      <p className="mono empty-hint">Fix PRs open against <strong>{prTarget}</strong> (set GITHUB_DEMO_REPO). Sign in or set GITHUB_TOKEN.</p>
     </div>
   );
 }
@@ -435,14 +605,16 @@ function SettingsPage({ me, t, setTweak }) {
 // ADVISORY TABLE
 // ─────────────────────────────────────────────────────────────
 function AdvisoryTable({ advisories, me, prState, onOpenPR }) {
-  const [filter, setFilter] = useState("all");
+  // Default to exposed — the win demo filter
+  const [filter, setFilter] = useState("exposed");
   const [query, setQuery] = useState("");
   const [openId, setOpenId] = useState(null);
 
   useEffect(() => {
-    const first = advisories.find(a => a.verdict === "exposed");
-    setOpenId(first ? first.id : (advisories[0]?.id ?? null));
-    setFilter("all");
+    const first = advisories.find(a => a.verdict === "exposed") || advisories[0];
+    setOpenId(first ? first.id : null);
+    const hasExposed = advisories.some(a => a.verdict === "exposed");
+    setFilter(hasExposed ? "exposed" : "all");
   }, [advisories]);
 
   const filtered = useMemo(()=> {
@@ -466,16 +638,22 @@ function AdvisoryTable({ advisories, me, prState, onOpenPR }) {
   return (
     <F>
       <div className="tbl-controls">
-        <FilterChip active={filter==="all"}     onClick={()=>setFilter("all")}    label="all"      count={counts.all} />
         <FilterChip active={filter==="exposed"} onClick={()=>setFilter("exposed")} label="exposed" count={counts.exposed} tone="exposed" />
         <FilterChip active={filter==="unsure"}  onClick={()=>setFilter("unsure")} label="unsure"   count={counts.unsure} tone="unsure" />
         <FilterChip active={filter==="safe"}    onClick={()=>setFilter("safe")}   label="safe"     count={counts.safe} tone="safe" />
+        <FilterChip active={filter==="all"}     onClick={()=>setFilter("all")}    label="all"      count={counts.all} />
         <div style={{flex:1}} />
         <div className="tbl-search">
           <span style={{color:"var(--text-muted)", fontFamily:"var(--font-mono)", fontSize:12}}>/</span>
           <input value={query} onChange={(e)=>setQuery(e.target.value)} placeholder="filter" />
         </div>
       </div>
+
+      {filter === "exposed" && (
+        <div className="filter-hint mono">
+          Showing reachability-confirmed only — switch to <button type="button" className="linkish" onClick={()=>setFilter("all")}>all</button> to see presence-style noise.
+        </div>
+      )}
 
       <div className="card" style={{overflow:"hidden"}}>
         <div className="tbl-row tbl-head">
@@ -485,7 +663,7 @@ function AdvisoryTable({ advisories, me, prState, onOpenPR }) {
           <span>cvss</span>
           <span>verdict</span>
           <span style={{textAlign:"right"}}>confidence</span>
-          <span style={{textAlign:"right"}}>cost</span>
+          <span style={{textAlign:"right"}}>sites</span>
           <span></span>
         </div>
 
@@ -496,7 +674,7 @@ function AdvisoryTable({ advisories, me, prState, onOpenPR }) {
 
         {filtered.length === 0 && (
           <div style={{padding:"40px 20px", textAlign:"center", color:"var(--text-muted)", fontFamily:"var(--font-mono)", fontSize:13}}>
-            no advisories match.
+            no advisories match — try “all” or run a scan.
           </div>
         )}
       </div>
@@ -532,7 +710,9 @@ function Row({ a, open, onToggle, last, me, pr, onOpenPR }) {
         <CVSSBadge cvss={a.cvss} severity={a.severity} />
         <VerdictPill v={a.verdict} />
         <ConfidenceBar c={a.confidence} v={a.verdict} />
-        <span className="mono" style={{fontSize:12.5, textAlign:"right", color:"var(--text-2)"}}>${a.cost.toFixed(2)}</span>
+        <span className="mono" style={{fontSize:12.5, textAlign:"right", color:"var(--text-2)"}}>
+          {a.callsites ?? (a.call_sites ? a.call_sites.length : 0)}
+        </span>
         <span style={{textAlign:"right", color:"var(--text-muted)"}}>›</span>
       </button>
 
@@ -551,9 +731,10 @@ function Chevron({ open }) {
 function CVSSBadge({ cvss, severity }) {
   const color = severity === "critical" ? "var(--danger-2)" : severity === "high" ? "var(--warn-2)"
               : severity === "moderate" ? "var(--primary-2)" : "var(--text-3)";
+  const n = typeof cvss === "number" ? cvss : parseFloat(cvss) || 0;
   return (
     <span style={{display:"inline-flex", alignItems:"center", gap:8}}>
-      <span className="mono" style={{fontSize:13, color, fontWeight:500}}>{cvss.toFixed(1)}</span>
+      <span className="mono" style={{fontSize:13, color, fontWeight:500}}>{n.toFixed(1)}</span>
       <span className="mono" style={{fontSize:10, color:"var(--text-muted)", letterSpacing:"0.08em", textTransform:"uppercase"}}>{severity}</span>
     </span>
   );
@@ -561,11 +742,12 @@ function CVSSBadge({ cvss, severity }) {
 
 function ConfidenceBar({ c, v }) {
   const color = v === "exposed" ? "var(--danger-2)" : v === "safe" ? "var(--safe-2)" : "var(--warn-2)";
+  const n = typeof c === "number" ? c : parseFloat(c) || 0;
   return (
     <div style={{display:"flex", alignItems:"center", gap:8, justifyContent:"flex-end"}}>
-      <span className="mono" style={{fontSize:12, color:"var(--text-2)"}}>{(c*100).toFixed(0)}%</span>
+      <span className="mono" style={{fontSize:12, color:"var(--text-2)"}}>{(n*100).toFixed(0)}%</span>
       <div style={{width:44, height:4, background:"var(--border)", borderRadius:2, overflow:"hidden"}}>
-        <div style={{width:`${c*100}%`, height:"100%", background:color}}/>
+        <div style={{width:`${n*100}%`, height:"100%", background:color}}/>
       </div>
     </div>
   );
@@ -575,6 +757,9 @@ function ConfidenceBar({ c, v }) {
 // EXPANDED ROW
 // ─────────────────────────────────────────────────────────────
 function ExpandedRow({ a, last, me, pr, onOpenPR }) {
+  const sites = a.call_sites || [];
+  const entrypoints = a.entrypoints || [];
+  const preflight = a.preflight;
   return (
     <div style={{background:"var(--bg-deep)", borderBottom: !last ? "1px solid var(--border)" : "none", padding:"22px"}}>
       <div className="expand-grid">
@@ -583,12 +768,33 @@ function ExpandedRow({ a, last, me, pr, onOpenPR }) {
             <p style={{margin:0, fontSize:13.5, lineHeight:1.65, color:"var(--text-2)"}}>{a.reasoning}</p>
           </Block>
 
-          <Block label={`evidence · ${a.quoteSource}`} accent="var(--node-3)">
+          <Block label="call sites (file:line)" accent="var(--danger-2)">
+            {sites.length === 0 ? (
+              <div className="mono" style={{fontSize:12, color:"var(--text-muted)"}}>
+                No syntactic call sites recorded — see entry points.
+              </div>
+            ) : (
+              <ul className="callsite-list">
+                {sites.slice(0, 8).map((s, i) => (
+                  <li key={i} className="callsite-item">
+                    <div className="callsite-loc mono">
+                      <span className="callsite-kind">{s.kind || "code"}</span>
+                      <span>{s.file_path}:{s.line}</span>
+                      {s.symbol && <span className="callsite-sym">{s.symbol}</span>}
+                    </div>
+                    <code className="callsite-snip">{s.snippet}</code>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Block>
+
+          <Block label={`evidence · ${a.quoteSource || a.id}`} accent="var(--node-3)">
             <div style={{fontFamily:"var(--font-mono)", fontSize:12.5, color:"var(--text-2)", lineHeight:1.65}}>
               &ldquo;{a.quote}&rdquo;
             </div>
             <div style={{marginTop:10, fontFamily:"var(--font-mono)", fontSize:11, color:"var(--text-muted)"}}>
-              <span style={{color:"var(--safe-2)"}}>✓</span> citation validated against source
+              <span style={{color:"var(--safe-2)"}}>✓</span> citation grounded against source when LLM quotes are present
             </div>
           </Block>
         </div>
@@ -596,18 +802,40 @@ function ExpandedRow({ a, last, me, pr, onOpenPR }) {
         <div style={{display:"flex", flexDirection:"column", gap:16}}>
           <Block label="entry points checked">
             <ul style={{listStyle:"none", margin:0, padding:0, display:"flex", flexDirection:"column", gap:8}}>
-              {a.entrypoints.map(e => (
+              {entrypoints.map(e => (
                 <li key={e} style={{fontFamily:"var(--font-mono)", fontSize:12, color:"var(--text-2)", display:"flex", alignItems:"center", gap:10}}>
-                  <span style={{color: a.callsites > 0 ? "var(--danger-2)" : "var(--safe-2)"}}>{a.callsites > 0 ? "▶" : "○"}</span>
+                  <span style={{color: (a.callsites > 0 || sites.length) ? "var(--danger-2)" : "var(--safe-2)"}}>
+                    {(a.callsites > 0 || sites.length) ? "▶" : "○"}
+                  </span>
                   {e}
                 </li>
               ))}
               <li style={{marginTop:6, paddingTop:10, borderTop:"1px dashed var(--border)", fontFamily:"var(--font-mono)", fontSize:12,
-                          color: a.callsites > 0 ? "var(--danger-2)" : "var(--safe-2)"}}>
-                {a.callsites} call site{a.callsites === 1 ? "" : "s"} reach <span style={{color:"var(--text)"}}>{a.function}</span>
+                          color: (a.callsites > 0 || sites.length) ? "var(--danger-2)" : "var(--safe-2)"}}>
+                {a.callsites ?? sites.length} call site{(a.callsites ?? sites.length) === 1 ? "" : "s"} ·{" "}
+                <span style={{color:"var(--text)"}}>{a.function}</span>
               </li>
             </ul>
           </Block>
+
+          {preflight && (
+            <Block label="preflight">
+              <span className="mono" style={{fontSize:12, color: preflight.ok ? "var(--safe-2)" : "var(--danger-2)"}}>
+                {preflight.ok ? "✓" : "✕"} {preflight.message}
+              </span>
+            </Block>
+          )}
+
+          {a.verdict === "safe" && (
+            <div className="why-not mono">
+              Why not Dependabot noise? Marked <strong>safe</strong> — present in the tree but not a production-reachable hit (or version out of range / dev-only / test-only).
+            </div>
+          )}
+          {a.verdict === "unsure" && (
+            <div className="why-not mono">
+              Unsure — needs human review. We don’t open a PR when confidence is low.
+            </div>
+          )}
 
           <PRAction a={a} me={me} pr={pr} onOpenPR={onOpenPR} />
         </div>
@@ -630,7 +858,9 @@ function Block({ label, accent, children }) {
 // PR ACTION
 // ─────────────────────────────────────────────────────────────
 function PRAction({ a, me, pr, onOpenPR }) {
-  const authed = !!(me && me.user);
+  const oauth = !!(me && me.user);
+  const pat = !!(me && me.pat_configured);
+  const canPr = oauth || pat;
   const primary = a.verdict === "exposed";
 
   if (pr && pr.status === "done") {
@@ -644,19 +874,29 @@ function PRAction({ a, me, pr, onOpenPR }) {
 
   return (
     <div style={{display:"flex", flexDirection:"column", gap:8}}>
-      {!authed ? (
-        <a className={`btn btn--sm ${primary ? "btn--primary" : ""} gh-signin`} href="/auth/github/login" style={{justifyContent:"center"}}>
-          <GithubMark size={14} /> Sign in to open PR
-        </a>
+      {!canPr ? (
+        me && me.configured ? (
+          <a className={`btn btn--sm ${primary ? "btn--primary" : ""} gh-signin`} href="/auth/github/login" style={{justifyContent:"center"}}>
+            <GithubMark size={14} /> Sign in to open PR
+          </a>
+        ) : (
+          <span className="mono" style={{fontSize:11.5, color:"var(--text-muted)", textAlign:"center", lineHeight:1.5}}>
+            Set <code>GITHUB_TOKEN</code> or OAuth to open fix PRs. Local draft is already ready when exposed.
+          </span>
+        )
       ) : (
         <button className={`btn btn--sm ${primary ? "btn--primary" : ""}`} style={{justifyContent:"center", opacity: pr?.status === "loading" ? 0.7 : 1}}
-                disabled={pr?.status === "loading" || !a.fix} onClick={() => onOpenPR(a)}>
+                disabled={pr?.status === "loading" || !a.fix || a.verdict !== "exposed"} onClick={() => onOpenPR(a)}>
           {pr?.status === "loading" ? <span className="caret">opening PR</span>
+            : a.verdict !== "exposed" ? "PR only for exposed"
             : a.fix ? `Open fix PR → ${a.pkg}@${a.fix}` : "No fix available"}
         </button>
       )}
       {pr && pr.status === "error" && <span className="mono" style={{fontSize:11.5, color:"var(--danger-2)"}}>✕ {pr.error}</span>}
-      {authed && me.repo && <span className="mono" style={{fontSize:11, color:"var(--text-muted)", textAlign:"center"}}>→ {me.repo}</span>}
+      {canPr && me && me.repo && <span className="mono" style={{fontSize:11, color:"var(--text-muted)", textAlign:"center"}}>→ {me.repo}</span>}
+      {a.pr_draft && a.verdict === "exposed" && (
+        <span className="mono" style={{fontSize:11, color:"var(--safe-2)", textAlign:"center"}}>✓ PR body drafted with evidence</span>
+      )}
     </div>
   );
 }
@@ -721,10 +961,47 @@ function DashboardStyles() {
   .dash-content{ padding:24px; display:flex; flex-direction:column; gap:16px; max-width:1240px; width:100%; margin:0 auto; }
 
   /* ── scan panel ── */
+  .hero-line{ font-size:12.5px; color:var(--text-3); margin:0 2px; }
+  .hero-line em{ color:var(--primary-2); font-style:normal; font-weight:600; }
+  .config-bar{ display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; font-size:11.5px; color:var(--text-muted); padding:8px 12px; border:1px solid var(--border); border-radius:var(--r-md); background:var(--bg-deep); }
+  .config-bar .ok{ color:var(--safe-2); }
+  .config-bar .warn{ color:var(--warn-2); }
+  .config-bar .dim{ color:var(--text-muted); }
+  .config-bar .sep{ opacity:0.4; }
+  .empty-scan{ padding:28px 16px; text-align:center; color:var(--text-3); border:1px dashed var(--border); border-radius:var(--r-lg); font-size:12.5px; }
   .scan-panel{ display:flex; align-items:center; gap:14px; flex-wrap:wrap; background:linear-gradient(180deg, var(--surface-2) 0%, var(--surface) 100%); border:1px solid var(--border); border-radius:var(--r-lg); padding:12px 14px; }
-  .scan-form{ display:flex; gap:8px; flex:1; min-width:280px; }
+  .scan-panel--stack{ flex-direction:column; align-items:stretch; gap:10px; }
+  .scan-form{ display:flex; gap:8px; flex:1; min-width:280px; width:100%; }
   .scan-input{ display:flex; align-items:center; gap:8px; flex:1; padding:8px 12px; background:var(--bg-deep); border:1px solid var(--border); border-radius:var(--r-md); }
   .scan-input input{ flex:1; border:none; outline:none; background:transparent; font-family:var(--font-mono); font-size:13px; color:var(--text); }
+  .scan-quick{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; }
+  .scan-hint{ font-size:11.5px; color:var(--text-muted); }
+  .chip--sm{ padding:4px 10px; font-size:11px; }
+
+  /* ── summary strip ── */
+  .summary-strip{ border:1px solid var(--border); border-radius:var(--r-lg); background:var(--surface); padding:14px 16px 12px; display:flex; flex-direction:column; gap:12px; }
+  .summary-strip__head{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+  .summary-strip__repo{ font-size:14px; color:var(--text); font-weight:600; }
+  .summary-strip__stats{ display:grid; grid-template-columns:repeat(5, minmax(0,1fr)); gap:10px; }
+  .summary-strip__stats div{ display:flex; flex-direction:column; gap:2px; padding:10px 12px; border-radius:var(--r-md); background:var(--bg-deep); border:1px solid var(--border); }
+  .summary-strip__stats b{ font-family:var(--font-mono); font-size:22px; font-weight:600; color:var(--text); letter-spacing:-0.02em; }
+  .summary-strip__stats span{ font-family:var(--font-mono); font-size:11px; color:var(--text-muted); }
+  .summary-strip__stats .summary-note{ font-style:normal; font-size:10px; color:var(--text-faint); margin-top:2px; }
+  .summary-strip__stats .is-danger b{ color:var(--danger-2); }
+  .summary-strip__stats .is-safe b{ color:var(--safe-2); }
+  .summary-strip__stats .is-warn b{ color:var(--warn-2); }
+  .summary-strip__foot{ font-size:11.5px; color:var(--text-3); line-height:1.5; }
+  .summary-strip__foot strong{ color:var(--text-2); font-weight:600; }
+  .filter-hint{ font-size:11.5px; color:var(--text-muted); }
+  .linkish{ background:none; border:none; color:var(--primary-2); cursor:pointer; font:inherit; text-decoration:underline; padding:0; }
+
+  .callsite-list{ list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:10px; }
+  .callsite-item{ display:flex; flex-direction:column; gap:4px; }
+  .callsite-loc{ display:flex; flex-wrap:wrap; gap:8px; align-items:center; font-size:11.5px; color:var(--text-2); }
+  .callsite-kind{ font-size:10px; text-transform:uppercase; letter-spacing:0.06em; color:var(--primary-2); border:1px solid rgba(249,115,22,0.35); border-radius:4px; padding:1px 6px; }
+  .callsite-sym{ color:var(--text-muted); }
+  .callsite-snip{ font-family:var(--font-mono); font-size:12px; color:var(--text); background:var(--bg-deep); border:1px solid var(--border); border-radius:6px; padding:8px 10px; white-space:pre-wrap; word-break:break-word; }
+  .why-not{ font-size:11.5px; color:var(--text-3); line-height:1.55; padding:10px 12px; border:1px dashed var(--border-strong); border-radius:var(--r-md); }
 
   /* ── table ── */
   .tbl-controls{ display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
@@ -777,6 +1054,9 @@ function DashboardStyles() {
     .dash-backdrop.show{ display:block; position:fixed; inset:0; background:rgba(0,0,0,0.55); z-index:35; }
     .expand-grid{ grid-template-columns:1fr; }
     .callout-grid{ grid-template-columns:1fr; }
+  }
+  @media (max-width:900px){
+    .summary-strip__stats{ grid-template-columns:repeat(2, minmax(0,1fr)); }
   }
   @media (max-width:720px){
     .dash-header{ padding:0 16px; }

@@ -1,3 +1,3 @@
-{"advisory_id": "GHSA-39hc-v8j9-pqp4", "repo_id": "00000000-0000-0000-0000-000000000001", "expected_verdict": true, "notes": "Lodash prototype pollution, reachable via merge()"}
-{"advisory_id": "GHSA-p86x-58gw-qc7p", "repo_id": "00000000-0000-0000-0000-000000000001", "expected_verdict": false, "notes": "Axios XSS, but only affects browser-side, repo is backend-only"}
-{"advisory_id": "GHSA-pw56-c772-9vvv", "repo_id": "00000000-0000-0000-0000-000000000001", "expected_verdict": true, "notes": "Express open redirect, reachable via res.redirect(req.query.next)"}
+{"advisory_id": "GHSA-fvqr-27wr-82fm", "package_name": "lodash", "expected_verdict": true, "notes": "lodash prototype pollution via merge — demo_app calls _.merge in production"}
+{"advisory_id": "GHSA-xvch-5gv4-984h", "package_name": "minimist", "expected_verdict": true, "notes": "minimist prototype pollution — demo_app uses minimist in server entrypoint"}
+{"advisory_id": "GHSA-pw2r-vq6v-hr8c", "package_name": "express", "expected_verdict": true, "notes": "express open redirect class issues — demo uses res.redirect(req.query.next)"}

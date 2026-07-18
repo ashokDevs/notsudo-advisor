@@ -1,0 +1,28 @@
+# Deploy on Render.com: https://dashboard.render.com → New → Blueprint
+services:
+  - type: web
+    name: notsudo-advisor
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: APP_BASE_URL
+        sync: false   # set to https://YOUR-SERVICE.onrender.com after first deploy
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: NOTSUDO_HASH_EMBEDDINGS
+        value: "1"
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_API_BASE
+        sync: false
+      - key: LLM_MODEL
+        sync: false
+      - key: GITHUB_TOKEN
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_DEMO_REPO
+        sync: false
