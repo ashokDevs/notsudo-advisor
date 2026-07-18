@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
-import pytest
 from unittest.mock import AsyncMock
+
+import pytest
 
 from core.ingestion.advisory_ingester import AdvisoryIngester
 from core.ingestion.osv_client import OSVClient

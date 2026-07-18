@@ -7,9 +7,9 @@ import typer
 from core.ingestion.chunker import Chunker
 from core.ingestion.dependency_reader import DependencyReader
 from core.ingestion.repo_ingester import RepoIngester
+from core.observability.logging import get_logger
 from core.retrieval.embedder import Embedder
 from core.storage.database import Database
-from core.observability.logging import get_logger
 
 logger = get_logger(__name__)
 app = typer.Typer(help="Dependency Exploitability Advisor CLI")

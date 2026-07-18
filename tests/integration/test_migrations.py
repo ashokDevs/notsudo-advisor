@@ -1,9 +1,10 @@
+import os
+
 import pytest
+from alembic import command
+from alembic.config import Config
 from sqlalchemy import create_engine
 from sqlalchemy.engine import Engine
-from alembic.config import Config
-from alembic import command
-import os
 
 pytestmark = pytest.mark.asyncio
 

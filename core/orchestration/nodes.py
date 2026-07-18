@@ -1,7 +1,8 @@
 import json
-from mcp_server.tools import check_vulnerable_dependency, code_search
-from core.orchestration.state import AgentState
+
 from core.observability.logging import get_logger
+from core.orchestration.state import AgentState
+from mcp_server.tools import check_vulnerable_dependency, code_search
 
 logger = get_logger(__name__)
 
@@ -69,8 +70,9 @@ async def reason_node(state: AgentState) -> AgentState:
         }
         
     import os
+
+    from langchain_core.messages import HumanMessage, SystemMessage
     from langchain_openai import ChatOpenAI
-    from langchain_core.messages import SystemMessage, HumanMessage
 
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
@@ -109,7 +111,8 @@ async def reason_node(state: AgentState) -> AgentState:
         
         # Simple extraction from JSON response
         import re
-        json_match = re.search(r"\{.*\}", response.content, re.DOTALL)
+        content = str(response.content)
+        json_match = re.search(r"\{.*\}", content, re.DOTALL)
         if json_match:
             result = json.loads(json_match.group(0))
             return {

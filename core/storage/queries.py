@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
+
 
 def load_queries() -> dict[str, str]:
     """Parse queries.sql and return a dict of {name: sql}."""

@@ -6,8 +6,8 @@ from typing import Any
 from uuid import uuid4
 
 from core.ingestion.osv_client import OSVClient
-from core.storage.database import Database
 from core.retrieval.embedder import Embedder
+from core.storage.database import Database
 
 
 class AdvisoryIngester:
@@ -55,7 +55,8 @@ class AdvisoryIngester:
     def _extract_package_name(self, data: dict[str, Any]) -> str:
         affected = data.get("affected", [])
         if affected:
-            return affected[0].get("package", {}).get("name", "unknown")
+            pkg = affected[0].get("package", {})
+            return str(pkg.get("name", "unknown"))
         return "unknown"
 
     def _extract_ranges(self, data: dict[str, Any]) -> list[dict[str, Any]]:

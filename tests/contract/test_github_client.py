@@ -1,4 +1,3 @@
-import os
 import pytest
 
 from core.action.github_client import GitHubClient

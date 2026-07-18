@@ -1,5 +1,6 @@
 from core.orchestration.state import AgentState
 
+
 class PRCreator:
     """Formats pull request bodies safely, avoiding raw advisory text to prevent injection."""
     

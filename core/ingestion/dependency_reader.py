@@ -2,8 +2,8 @@ import json
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from core.storage.database import Database
 from core.observability.logging import get_logger
+from core.storage.database import Database
 
 logger = get_logger(__name__)
 

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
 from typing import Any
 
 import asyncpg

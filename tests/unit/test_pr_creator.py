@@ -1,6 +1,7 @@
 from core.action.pr_creator import PRCreator
 from core.orchestration.state import AgentState
 
+
 def test_pr_creator_formats_safely() -> None:
     state: AgentState = {
         "advisory_id": "GHSA-123",

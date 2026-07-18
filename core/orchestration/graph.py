@@ -1,6 +1,11 @@
-from langgraph.graph import StateGraph, END
+from typing import Any
+
+from langgraph.graph import END, StateGraph
+from langgraph.graph.state import CompiledStateGraph
+
+from core.orchestration.nodes import act_node, locate_node, reason_node, triage_node
 from core.orchestration.state import AgentState
-from core.orchestration.nodes import triage_node, locate_node, reason_node, act_node
+
 
 def route_triage(state: AgentState) -> str:
     """Decide whether to proceed to locate or end based on triage."""
@@ -15,7 +20,7 @@ def route_reason(state: AgentState) -> str:
         return "locate"
     return "act"
 
-def build_graph() -> StateGraph:
+def build_graph() -> CompiledStateGraph[AgentState, Any, Any]:
     """Compile the LangGraph state machine with capability-isolated nodes."""
     workflow = StateGraph(AgentState)
     

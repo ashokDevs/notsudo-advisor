@@ -6,6 +6,7 @@ import sys
 
 import structlog
 
+
 def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a configured structlog logger."""
     if not structlog.is_configured():

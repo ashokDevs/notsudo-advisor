@@ -1,9 +1,9 @@
 import json
 from uuid import UUID
 
-from mcp_server.server import mcp
-from core.storage.database import Database
 from core.retrieval.embedder import Embedder
+from core.storage.database import Database
+from mcp_server.server import mcp
 
 # Simple semver check could go here, but for demonstration we check presence
 # and optionally do naive string comparison or rely on an external semver library.
@@ -25,7 +25,9 @@ async def get_embedder() -> Embedder:
     return _embedder
 
 @mcp.tool()
-async def check_vulnerable_dependency(repo_id: str, commit_sha: str, package_name: str, affected_ranges_json: str) -> bool:
+async def check_vulnerable_dependency(
+    repo_id: str, commit_sha: str, package_name: str, affected_ranges_json: str
+) -> bool:
     """Check if the given package is present in the repo dependencies at a vulnerable version."""
     db = await get_db()
     
@@ -38,8 +40,7 @@ async def check_vulnerable_dependency(repo_id: str, commit_sha: str, package_nam
     if not res:
         return False
         
-    resolved_version = res["resolved_version"]
-    
+    # res["resolved_version"] contains the version.
     # We would parse affected_ranges_json and compare resolved_version against the ranges.
     # For the sake of this prototype, we'll assume it's vulnerable if the package exists.
     # In a complete implementation, we'd use the `semver` python package.

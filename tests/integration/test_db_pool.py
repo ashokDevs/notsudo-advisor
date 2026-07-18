@@ -1,7 +1,5 @@
-import asyncio
 
 import pytest
-import asyncpg
 
 from core.storage.database import Database
 from core.storage.queries import QUERIES

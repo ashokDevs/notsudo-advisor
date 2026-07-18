@@ -3,7 +3,8 @@ from uuid import uuid4
 import pytest
 from pydantic import ValidationError
 
-from core.storage.models import Advisory, AffectedRange
+from core.storage.models import Advisory
+
 
 def test_advisory_round_trip() -> None:
     data = {

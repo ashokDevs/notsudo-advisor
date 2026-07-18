@@ -1,6 +1,6 @@
-import pytest
 
 from mcp_server.server import mcp
+
 
 def test_mcp_server_initializes() -> None:
     assert mcp.name == "notsudo"

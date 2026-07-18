@@ -1,6 +1,6 @@
-import pytest
 
 from core.ingestion.chunker import Chunker
+
 
 def test_chunk_javascript_functions() -> None:
     chunker = Chunker()

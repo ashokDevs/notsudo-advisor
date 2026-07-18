@@ -1,11 +1,10 @@
 from __future__ import annotations
 
-import json
 import os
-from io import StringIO
 from unittest.mock import patch
 
 from core.observability.logging import _configure_structlog, get_logger
+
 
 def test_log_emits_structured_json() -> None:
     with patch.dict(os.environ, {"ENVIRONMENT": "production"}):

@@ -5,9 +5,9 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from core.ingestion.chunker import Chunker
+from core.observability.logging import get_logger
 from core.retrieval.embedder import Embedder
 from core.storage.database import Database
-from core.observability.logging import get_logger
 
 logger = get_logger(__name__)
 
