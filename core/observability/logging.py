@@ -11,7 +11,8 @@ def get_logger(name: str) -> structlog.stdlib.BoundLogger:
     """Return a configured structlog logger."""
     if not structlog.is_configured():
         _configure_structlog()
-    return structlog.get_logger(name)
+    import typing
+    return typing.cast(structlog.stdlib.BoundLogger, structlog.get_logger(name))
 
 def _configure_structlog() -> None:
     env = os.getenv("ENVIRONMENT", "development")

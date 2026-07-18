@@ -1,6 +1,8 @@
 import os
 
 import pytest
+from typing import AsyncGenerator
+
 from httpx import HTTPStatusError
 
 from core.ingestion.osv_client import OSVClient
@@ -8,7 +10,7 @@ from core.ingestion.osv_client import OSVClient
 pytestmark = pytest.mark.asyncio
 
 @pytest.fixture
-async def osv_client() -> OSVClient:
+async def osv_client() -> AsyncGenerator[OSVClient, None]:
     client = OSVClient()
     yield client
     await client.close()

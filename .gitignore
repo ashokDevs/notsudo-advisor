@@ -27,3 +27,6 @@ wheels/
 
 # macOS
 .DS_Store
+
+# Nested demo repo (has its own GitHub remote)
+scratch/

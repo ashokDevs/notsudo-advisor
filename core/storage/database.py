@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import asyncpg
+import asyncpg # type: ignore[import-untyped]
 
 from core.observability.logging import get_logger
 
@@ -35,7 +35,7 @@ class Database:
     async def fetch(self, query: str, *args: Any) -> list[asyncpg.Record]:
         if self._pool is None:
             raise RuntimeError("Database not connected")
-        return await self._pool.fetch(query, *args)
+        return await self._pool.fetch(query, *args) # type: ignore[no-any-return]
 
     async def fetchrow(self, query: str, *args: Any) -> asyncpg.Record | None:
         if self._pool is None:
@@ -45,4 +45,4 @@ class Database:
     async def execute(self, query: str, *args: Any) -> str:
         if self._pool is None:
             raise RuntimeError("Database not connected")
-        return await self._pool.execute(query, *args)
+        return await self._pool.execute(query, *args) # type: ignore[no-any-return]

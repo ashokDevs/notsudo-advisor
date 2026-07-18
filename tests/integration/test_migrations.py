@@ -3,13 +3,12 @@ import os
 import pytest
 from alembic import command
 from alembic.config import Config
+from typing import Generator
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-pytestmark = pytest.mark.asyncio
-
 @pytest.fixture
-def db_engine() -> Engine:
+def db_engine() -> Generator[Engine, None, None]:
     url = os.getenv("DATABASE_URL", "postgresql://user:password@localhost:5432/notsudo")
     engine = create_engine(url)
     yield engine

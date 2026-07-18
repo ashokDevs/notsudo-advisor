@@ -49,4 +49,4 @@ class GitHubClient:
         )
         response.raise_for_status()
         data = response.json()
-        return data.get("html_url")
+        return data.get("html_url") # type: ignore[no-any-return]
