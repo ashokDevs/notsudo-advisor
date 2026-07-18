@@ -27,6 +27,8 @@ def test_up_then_down_is_clean(db_engine: Engine) -> None:
         assert "tenants" in tables
         assert "repos" in tables
         assert "advisories" in tables
+        assert "code_chunks" in tables
+        assert "repo_dependencies" in tables
     
     # Check that we can run downgrade
     command.downgrade(alembic_cfg, "base")
@@ -38,3 +40,5 @@ def test_up_then_down_is_clean(db_engine: Engine) -> None:
         assert "tenants" not in tables
         assert "repos" not in tables
         assert "advisories" not in tables
+        assert "code_chunks" not in tables
+        assert "repo_dependencies" not in tables
