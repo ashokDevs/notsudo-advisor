@@ -143,18 +143,18 @@ function App() {
     }
   }, []);
 
-  // Prefer target from landing page form; else demo_app
+  // Only auto-scan if the landing page passed a target — never force demo_app
   useEffect(() => {
-    let target = "demo_app";
     try {
       const saved = sessionStorage.getItem("notsudo_scan_target");
       if (saved && saved.trim()) {
-        target = saved.trim();
         sessionStorage.removeItem("notsudo_scan_target");
+        handleScan(saved.trim());
       }
     } catch (_) { /* ignore */ }
-    handleScan(target);
-  }, [handleScan]);
+    // Intentionally run once on mount only
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const openPR = useCallback(async (a) => {
     setPrState(s => ({ ...s, [a.id]: { status: "loading" } }));
