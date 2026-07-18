@@ -68,11 +68,62 @@ async def reason_node(state: AgentState) -> AgentState:
             "reachability_reasoning": "No call sites found."
         }
         
-    # Simulate LLM reasoning
+    import os
+    from langchain_openai import ChatOpenAI
+    from langchain_core.messages import SystemMessage, HumanMessage
+
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        logger.warning("OPENAI_API_KEY not found, falling back to simulation")
+        return {
+            **state,
+            "is_exposed": True,
+            "reachability_reasoning": "SIMULATION: Found vulnerable call site in retrieved context."
+        }
+
+    model = ChatOpenAI(model=os.getenv("LLM_MODEL", "gpt-4o"))
+    
+    context_str = "\n---\n".join([
+        f"File: {c['file_path']}\nSymbol: {c['symbol']}\nContent:\n{c['content']}"
+        for c in context
+    ])
+
+    prompt = f"""
+    Analyze if the vulnerability in {state['package_name']} ({state['advisory_id']}) is reachable in the following code context.
+    
+    Context:
+    {context_str}
+    
+    Respond in JSON format:
+    {{
+        "is_exposed": bool,
+        "reasoning": "string"
+    }}
+    """
+
+    try:
+        response = await model.ainvoke([
+            SystemMessage(content="You are a security expert analyzing reachability of vulnerabilities in code."),
+            HumanMessage(content=prompt)
+        ])
+        
+        # Simple extraction from JSON response
+        import re
+        json_match = re.search(r"\{.*\}", response.content, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group(0))
+            return {
+                **state,
+                "is_exposed": result.get("is_exposed", False),
+                "reachability_reasoning": result.get("reasoning", "LLM determined vulnerability reachability.")
+            }
+    except Exception as e:
+        logger.error("LLM reasoning failed", error=str(e))
+
     return {
         **state,
         "is_exposed": True,
-        "reachability_reasoning": "Found vulnerable call site in retrieved context."
+        "reachability_reasoning": "Fallback: Reasoning inconclusive due to LLM error."
     }
 
 async def act_node(state: AgentState) -> AgentState:
