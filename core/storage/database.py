@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-import asyncpg # type: ignore[import-untyped]
+import asyncpg  # type: ignore[import-untyped]
 
 from core.observability.logging import get_logger
 

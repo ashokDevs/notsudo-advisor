@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-# Load .env before other modules read keys
-import core.config  # noqa: F401
-
 import asyncio
 import json
 from pathlib import Path
@@ -10,6 +7,8 @@ from uuid import uuid4
 
 import typer
 
+# Load .env before other modules read keys
+import core.config  # noqa: F401
 from core.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -26,7 +25,6 @@ def scan(
     no_preflight: bool = typer.Option(False, "--no-preflight", help="Skip lockfile preflight"),
 ) -> None:
     """Scan a local path or public GitHub repo: OSV → reachability → preflight."""
-    from api.scanner import scan_repo
     from core.analysis.github_clone import cleanup_target, resolve_scan_target
     from core.analysis.pipeline import analyze_repo
 
@@ -319,7 +317,7 @@ def demo_cmd(
                         f"    {cs.get('file_path')}:{cs.get('line')}  {cs.get('snippet', '')[:90]}"
                     )
             if a.get("pr_draft"):
-                typer.secho(f"    ✓ fix PR draft ready", fg=typer.colors.GREEN)
+                typer.secho("    ✓ fix PR draft ready", fg=typer.colors.GREEN)
 
     typer.secho(
         "\n── Security ──\n  Advisory text is untrusted. Only the act node can open PRs (capability isolation).\n",

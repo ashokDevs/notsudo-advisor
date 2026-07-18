@@ -1,11 +1,12 @@
 import os
+from typing import Generator
 
 import pytest
 from alembic import command
 from alembic.config import Config
-from typing import Generator
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
+
 
 @pytest.fixture
 def db_engine() -> Generator[Engine, None, None]:

@@ -1,8 +1,7 @@
 import os
-
-import pytest
 from typing import AsyncGenerator
 
+import pytest
 from httpx import HTTPStatusError
 
 from core.ingestion.osv_client import OSVClient

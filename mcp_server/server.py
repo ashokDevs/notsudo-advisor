@@ -3,7 +3,7 @@ from __future__ import annotations
 from mcp.server.fastmcp import FastMCP
 
 from core.observability.logging import get_logger
-from core.security.capability_graph import CapabilityGraph, TOOL_PERMISSIONS
+from core.security.capability_graph import TOOL_PERMISSIONS, CapabilityGraph
 
 logger = get_logger(__name__)
 

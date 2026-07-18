@@ -10,12 +10,12 @@ from typing import Any
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from core.action.pr_creator import PRCreator
 from core.analysis.call_sites import CallSiteFinder
 from core.analysis.preflight import PreflightResult, preflight_bump
 from core.analysis.reachability import advisory_to_severity, assess_reachability
 from core.analysis.semver import first_fixed_version, strip_version, version_affected_by_ranges
 from core.analysis.symbols import extract_vulnerable_symbols
-from core.action.pr_creator import PRCreator
 from core.llm.client import LLMClient, get_llm_client
 from core.observability.logging import get_logger
 

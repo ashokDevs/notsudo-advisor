@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-# Load .env BEFORE any other local imports that read secrets
-import core.config  # noqa: F401
-
 import os
 import secrets
 from pathlib import Path
@@ -16,6 +13,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from starlette.middleware.sessions import SessionMiddleware
 
+# Load .env BEFORE any other local imports that read secrets
+import core.config  # noqa: F401
 from api import github_api
 from core.config import (
     app_base_url,

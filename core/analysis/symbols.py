@@ -3,7 +3,6 @@ from __future__ import annotations
 import re
 from typing import Any
 
-
 _SYMBOL_HINTS = re.compile(
     r"""
     (?:function|method|API|via|through|in)\s+
