@@ -156,6 +156,8 @@ function App() {
       const targetRepo = (scanMeta && scanMeta.pr_target_repo)
         || (me && me.repo)
         || null;
+      // Prefer server GITHUB_AUTO_MERGE; also request merge from UI when health says so
+      const wantMerge = !!(health && health.auto_merge) || !!(me && me.auto_merge);
       const res = await fetch("/api/pr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -165,6 +167,7 @@ function App() {
           quote: a.quote, quoteSource: a.quoteSource, entrypoints: a.entrypoints,
           evidence_quotes: a.evidence_quotes || [],
           target_repo: targetRepo,
+          auto_merge: wantMerge,
         }),
       });
       const data = await res.json();
@@ -175,11 +178,20 @@ function App() {
           : (detail && JSON.stringify(detail)) || "PR failed";
         throw new Error(msg);
       }
-      setPrState(s => ({ ...s, [a.id]: { status: "done", url: data.url, number: data.number } }));
+      setPrState(s => ({
+        ...s,
+        [a.id]: {
+          status: "done",
+          url: data.url,
+          number: data.number,
+          merged: !!data.merged,
+          merge_commit_sha: data.merge_commit_sha || null,
+        },
+      }));
     } catch (e) {
       setPrState(s => ({ ...s, [a.id]: { status: "error", error: e.message } }));
     }
-  }, [scanMeta, me]);
+  }, [scanMeta, me, health]);
 
   const exposedCount = useMemo(() => advisories.filter(a => a.verdict === "exposed").length, [advisories]);
 
@@ -390,6 +402,10 @@ function ConfigBar({ health, me, scanMeta }) {
       <span className="sep">·</span>
       <span className={pat || (me && me.user) ? "ok" : "dim"}>
         {me && me.user ? `signed in as ${me.user.login}` : pat ? "PAT ready for PRs" : "no PR write creds"}
+      </span>
+      <span className="sep">·</span>
+      <span className={(health?.auto_merge || me?.auto_merge) ? "ok" : "dim"}>
+        {(health?.auto_merge || me?.auto_merge) ? "auto-merge ON" : "auto-merge off"}
       </span>
       {scanMeta?.llm_enabled != null && (
         <>
@@ -907,11 +923,19 @@ function PRAction({ a, me, pr, onOpenPR, prTargetRepo }) {
   // Prefer scanned GitHub repo; else configured demo repo
   const target = prTargetRepo || (me && me.repo) || "GITHUB_DEMO_REPO";
 
+  const autoMerge = !!(me && me.auto_merge);
   if (pr && pr.status === "done") {
     return (
       <div className="pr-result pr-result--ok">
-        <span><span style={{color:"var(--safe-2)"}}>✓</span> PR #{pr.number} — {a.pkg} → {a.fix}</span>
-        <a className="btn btn--primary btn--sm" href={pr.url} target="_blank" rel="noreferrer">View PR ↗</a>
+        <span>
+          <span style={{color:"var(--safe-2)"}}>✓</span>{" "}
+          {pr.merged
+            ? `Merged #${pr.number} — ${a.pkg} → ${a.fix}`
+            : `PR #${pr.number} — ${a.pkg} → ${a.fix}`}
+        </span>
+        <a className="btn btn--primary btn--sm" href={pr.url} target="_blank" rel="noreferrer">
+          {pr.merged ? "View merge ↗" : "View PR ↗"}
+        </a>
       </div>
     );
   }
@@ -931,9 +955,13 @@ function PRAction({ a, me, pr, onOpenPR, prTargetRepo }) {
       ) : (
         <button className={`btn btn--sm ${primary ? "btn--primary" : ""}`} style={{justifyContent:"center", opacity: pr?.status === "loading" ? 0.7 : 1}}
                 disabled={pr?.status === "loading" || !a.fix || a.verdict !== "exposed"} onClick={() => onOpenPR(a)}>
-          {pr?.status === "loading" ? <span className="caret">opening PR</span>
+          {pr?.status === "loading"
+            ? <span className="caret">{autoMerge ? "opening + merging" : "opening PR"}</span>
             : a.verdict !== "exposed" ? "PR only for exposed"
-            : a.fix ? `Open fix PR → ${a.pkg}@${a.fix}` : "No fix available"}
+            : !a.fix ? "No fix available"
+            : autoMerge
+              ? `Apply fix (open + merge) → ${a.pkg}@${a.fix}`
+              : `Open fix PR → ${a.pkg}@${a.fix}`}
         </button>
       )}
       {pr && pr.status === "error" && (

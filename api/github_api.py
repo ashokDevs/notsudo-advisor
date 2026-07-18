@@ -9,7 +9,9 @@ import httpx
 
 from core.config import (
     app_base_url,
+    github_auto_merge,
     github_demo_repo,
+    github_merge_method,
     github_oauth_credentials,
     github_token,
 )
@@ -260,8 +262,34 @@ def _pr_body(advisory: dict[str, Any], pkg: str, current: str, fix: str) -> str:
 - https://osv.dev/vulnerability/{advisory.get('id', '')}
 
 ---
-*Opened by NotSudo Advisor. Human review required — never auto-merged.*
+*Opened by NotSudo Advisor.*
 """
+
+
+async def _merge_pull_request(
+    client: httpx.AsyncClient,
+    *,
+    repo: str,
+    number: int,
+    title: str,
+    method: str,
+) -> dict[str, Any]:
+    """Merge an open PR. Returns merge API payload."""
+    resp = await client.put(
+        f"{_API}/repos/{repo}/pulls/{number}/merge",
+        json={
+            "commit_title": title[:255],
+            "merge_method": method,
+        },
+    )
+    if resp.status_code >= 400:
+        raise ValueError(
+            _http_error_detail(
+                resp,
+                "auto-merge PR (needs permission to merge — Contents write + no branch protection blocking)",
+            )
+        )
+    return resp.json() if resp.content else {"merged": True}
 
 
 async def open_fix_pr(
@@ -272,7 +300,16 @@ async def open_fix_pr(
     current: str,
     fix: str,
     advisory: dict[str, Any],
+    auto_merge: bool | None = None,
+    merge_method: str | None = None,
 ) -> dict[str, Any]:
+    """
+    Open a version-bump fix PR. When auto_merge is true (or GITHUB_AUTO_MERGE=1),
+    merges the PR immediately after creation.
+    """
+    do_merge = github_auto_merge() if auto_merge is None else auto_merge
+    method = merge_method or github_merge_method()
+
     headers = _auth_headers(token)
     advisory_id = str(advisory.get("id", "fix"))
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", advisory_id).strip("-").lower()[:24]
@@ -335,15 +372,17 @@ async def open_fix_pr(
         if put.status_code >= 400:
             raise ValueError(_http_error_detail(put, "commit package.json bump (Contents: write)"))
 
+        pr_title = f"fix({pkg}): bump to {fix} — remediate {advisory_id}"
         pr = await client.post(
             f"{_API}/repos/{repo}/pulls",
             json={
-                "title": f"fix({pkg}): bump to {fix} — remediate {advisory_id}",
+                "title": pr_title,
                 "head": branch,
                 "base": default_branch,
                 "body": _pr_body(advisory, pkg, current, fix),
             },
         )
+        reused = False
         if pr.status_code == 422:
             owner = repo.split("/")[0]
             existing = await client.get(
@@ -353,23 +392,51 @@ async def open_fix_pr(
             if existing.status_code == 200:
                 items = existing.json()
                 if items:
-                    return {
-                        "url": items[0]["html_url"],
-                        "number": items[0]["number"],
-                        "branch": branch,
-                        "reused": True,
-                    }
-            raise ValueError(_http_error_detail(pr, "create pull request"))
-        if pr.status_code >= 400:
+                    data = items[0]
+                    reused = True
+                else:
+                    raise ValueError(_http_error_detail(pr, "create pull request"))
+            else:
+                raise ValueError(_http_error_detail(pr, "create pull request"))
+        elif pr.status_code >= 400:
             raise ValueError(_http_error_detail(pr, "create pull request (Pull requests: write)"))
-        data = pr.json()
+        else:
+            data = pr.json()
 
-    return {
-        "url": data["html_url"],
-        "number": data["number"],
-        "branch": branch,
-        "reused": False,
-    }
+        number = int(data["number"])
+        url = str(data["html_url"])
+        result: dict[str, Any] = {
+            "url": url,
+            "number": number,
+            "branch": branch,
+            "reused": reused,
+            "merged": False,
+            "merge_commit_sha": None,
+            "auto_merge": do_merge,
+            "base_branch": default_branch,
+        }
+
+        if do_merge:
+            merge_title = f"fix({pkg}): bump {current} -> {fix} ({advisory_id})"
+            merge_data = await _merge_pull_request(
+                client,
+                repo=repo,
+                number=number,
+                title=merge_title,
+                method=method,
+            )
+            result["merged"] = bool(merge_data.get("merged", True))
+            result["merge_commit_sha"] = merge_data.get("sha")
+            result["merge_method"] = method
+            logger.info(
+                "auto-merged fix PR",
+                repo=repo,
+                number=number,
+                method=method,
+                sha=result["merge_commit_sha"],
+            )
+
+    return result
 
 
 def resolve_write_token(session_token: str | None = None) -> str | None:

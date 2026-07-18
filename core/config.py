@@ -154,6 +154,23 @@ def github_demo_repo() -> str:
     return _env("GITHUB_DEMO_REPO") or "ashokDevs/notsudo-demo-app"
 
 
+def github_auto_merge() -> bool:
+    """
+    When true, open_fix_pr merges the PR immediately after creation.
+    Requires PAT/OAuth with permission to merge (usually Contents write + PR write).
+    Env: GITHUB_AUTO_MERGE=1|true|yes
+    """
+    return _truthy("GITHUB_AUTO_MERGE")
+
+
+def github_merge_method() -> str:
+    """squash | merge | rebase — default squash for clean history."""
+    method = _env("GITHUB_MERGE_METHOD", "squash").lower()
+    if method not in {"squash", "merge", "rebase"}:
+        return "squash"
+    return method
+
+
 def config_warnings() -> list[str]:
     """Human-readable misconfiguration hints (safe to show in /api/health)."""
     warnings: list[str] = []
@@ -207,6 +224,8 @@ def get_settings() -> dict[str, str | bool | None | list[str]]:
         "github_client_secret_set": bool(_env("GITHUB_CLIENT_SECRET")),
         "github_pat": bool(github_token()),
         "github_demo_repo": github_demo_repo(),
+        "github_auto_merge": github_auto_merge(),
+        "github_merge_method": github_merge_method(),
         "app_base_url": app_base_url(),
         "online": is_production(),
         "database_url_set": bool(_env("DATABASE_URL")),

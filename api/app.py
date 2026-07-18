@@ -18,6 +18,7 @@ from api import github_api
 from core.config import (
     app_base_url,
     get_settings,
+    github_auto_merge,
     github_demo_repo,
     is_production,
     session_https_only,
@@ -87,6 +88,8 @@ class PRRequest(BaseModel, extra="forbid"):
     entrypoints: list[str] | None = None
     evidence_quotes: list[dict[str, Any]] | None = None
     target_repo: str | None = None
+    # When true, merge immediately after opening (overrides GITHUB_AUTO_MERGE if set)
+    auto_merge: bool | None = None
 
 
 class LocalFixRequest(BaseModel, extra="forbid"):
@@ -275,6 +278,8 @@ async def me(request: Request) -> JSONResponse:
             "public_url": app_base_url(),
             "online": is_production(),
             "oauth_callback": f"{app_base_url()}/auth/github/callback",
+            "auto_merge": bool(s.get("github_auto_merge")),
+            "merge_method": s.get("github_merge_method") or "squash",
         }
     )
 
@@ -307,6 +312,8 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
     if not req.fix:
         raise HTTPException(status_code=400, detail=f"No fixed version known for {req.pkg}")
     target = req.target_repo or github_demo_repo()
+    # Request can force merge; otherwise use GITHUB_AUTO_MERGE env
+    do_merge = github_auto_merge() if req.auto_merge is None else req.auto_merge
     try:
         result = await github_api.open_fix_pr(
             str(token),
@@ -315,6 +322,7 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
             current=req.current,
             fix=req.fix,
             advisory=req.model_dump(),
+            auto_merge=do_merge,
         )
     except ValueError as exc:
         # Permission / validation errors — surface as 400 with clear text
@@ -347,6 +355,8 @@ async def health() -> dict[str, Any]:
         ),
         "github_pat": s["github_pat"],
         "demo_repo": s["github_demo_repo"],
+        "auto_merge": bool(s.get("github_auto_merge")),
+        "merge_method": s.get("github_merge_method") or "squash",
         "env_loaded": bool(s["env_file"]),
         "warnings": warnings,
         "config_ok": len(warnings) == 0,
