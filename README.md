@@ -4,6 +4,7 @@
 
 [![CI](https://github.com/ashokDevs/notsudo-advisor/actions/workflows/ci.yml/badge.svg)](https://github.com/ashokDevs/notsudo-advisor/actions/workflows/ci.yml)
 [![Live Demo](https://img.shields.io/badge/demo-live%20on%20Render-brightgreen)](https://notsudo-advisor.onrender.com/Dashboard.html)
+[![Watch Demo](https://img.shields.io/badge/watch-Loom%20demo-purple)](https://www.loom.com/share/805e2a381d894a2799e90072d61e29ee)
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-see%20repo-lightgrey)](https://github.com/ashokDevs/notsudo-advisor)
 
@@ -14,6 +15,7 @@
 | | URL | Description |
 |--|-----|-------------|
 | **Live app** | [https://notsudo-advisor.onrender.com/Dashboard.html](https://notsudo-advisor.onrender.com/Dashboard.html) | Production dashboard — scan any public GitHub repo |
+| **Video demo** | [Loom walkthrough](https://www.loom.com/share/805e2a381d894a2799e90072d61e29ee) | Screen recording of NotSudo in action |
 | **Health** | [https://notsudo-advisor.onrender.com/api/health](https://notsudo-advisor.onrender.com/api/health) | Live config status (LLM, OAuth, PAT, auto-merge) |
 | **Landing** | [https://notsudo-advisor.onrender.com/](https://notsudo-advisor.onrender.com/) | Product landing page |
 | **Source** | [github.com/ashokDevs/notsudo-advisor](https://github.com/ashokDevs/notsudo-advisor) | Full codebase |
@@ -183,6 +185,8 @@ notsudo-advisor/
 
 ## Live demo walkthrough
 
+**Watch the demo:** [https://www.loom.com/share/805e2a381d894a2799e90072d61e29ee](https://www.loom.com/share/805e2a381d894a2799e90072d61e29ee)
+
 1. Open **[Dashboard](https://notsudo-advisor.onrender.com/Dashboard.html)** (free tier may take ~30–60s to wake)  
 2. Scan:
    - `demo_app` (bundled vulnerable sample), or  
@@ -349,6 +353,8 @@ See repository owner for license terms.
 ---
 
 <p align="center">
+  <a href="https://www.loom.com/share/805e2a381d894a2799e90072d61e29ee"><strong>Watch the Loom demo →</strong></a>
+  ·
   <a href="https://notsudo-advisor.onrender.com/Dashboard.html"><strong>Open the live Dashboard →</strong></a>
   ·
   <a href="https://github.com/ashokDevs/notsudo-advisor">Star on GitHub</a>
