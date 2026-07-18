@@ -79,29 +79,41 @@ def llm_models() -> tuple[str, str]:
     return cheap, frontier
 
 
+def _origin_only(url: str) -> str:
+    """Strip path/query so APP_BASE_URL is always scheme://host[:port]."""
+    from urllib.parse import urlparse
+
+    raw = url.strip().rstrip("/")
+    if not raw:
+        return raw
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    if not parsed.scheme or not parsed.netloc:
+        return raw
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
 def app_base_url() -> str:
     """
     Public origin of this deployment.
-    Online: APP_BASE_URL=https://notsudo-advisor.onrender.com
+    Online: APP_BASE_URL=https://notsudo-advisor.onrender.com  (no /Dashboard.html)
     """
     explicit = _env("APP_BASE_URL")
-    # Misconfig: DATABASE_URL pasted into APP_BASE_URL
+    # Misconfig: DATABASE_URL or secret pasted into APP_BASE_URL
     if explicit and (_looks_like_database_url(explicit) or _looks_like_secret_key(explicit)):
         explicit = ""
     if explicit and _looks_like_url(explicit):
-        return explicit.rstrip("/")
+        return _origin_only(explicit)
 
     render = _env("RENDER_EXTERNAL_URL")
     if render:
-        return render.rstrip("/")
+        return _origin_only(render)
 
     railway = _env("RAILWAY_PUBLIC_DOMAIN")
     if railway:
         if railway.startswith("http"):
-            return railway.rstrip("/")
+            return _origin_only(railway)
         return f"https://{railway}"
 
-    # Last resort for known Render service name pattern
     service = _env("RENDER_SERVICE_NAME")
     if service:
         return f"https://{service}.onrender.com"
