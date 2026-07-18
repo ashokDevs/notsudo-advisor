@@ -18,6 +18,7 @@ from api import github_api
 from core.config import (
     app_base_url,
     get_settings,
+    github_demo_repo,
     is_production,
     session_https_only,
     session_secret,
@@ -286,7 +287,7 @@ async def github_status(request: Request) -> dict[str, Any]:
         return {
             "ok": False,
             "error": "No token — set GITHUB_TOKEN on Render or Sign in with GitHub",
-            "repo": github_api.github_demo_repo(),
+            "repo": github_demo_repo(),
         }
     return await github_api.verify_write_access(token)
 
@@ -305,7 +306,7 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
         )
     if not req.fix:
         raise HTTPException(status_code=400, detail=f"No fixed version known for {req.pkg}")
-    target = req.target_repo or github_api.github_demo_repo()
+    target = req.target_repo or github_demo_repo()
     try:
         result = await github_api.open_fix_pr(
             str(token),
@@ -326,7 +327,10 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     s = get_settings()
-    warnings = list(s.get("warnings") or [])
+    raw_warnings = s.get("warnings") or []
+    warnings: list[str] = (
+        list(raw_warnings) if isinstance(raw_warnings, list) else []
+    )
     return {
         "ok": True,
         "dynamic": True,

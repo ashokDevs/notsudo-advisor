@@ -37,8 +37,11 @@ class Embedder:
         if self._use_hash or self.model is None:
             return [self._hash_embed(t) for t in texts]
 
+        model = self.model
+        assert model is not None
+
         def _embed() -> list[list[float]]:
-            embeddings = self.model.encode(texts, batch_size=batch_size, show_progress_bar=False)
+            embeddings = model.encode(texts, batch_size=batch_size, show_progress_bar=False)
             return embeddings.tolist()  # type: ignore[no-any-return]
 
         return await asyncio.to_thread(_embed)

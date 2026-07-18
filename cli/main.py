@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from typing import Any
 from uuid import uuid4
 
 import typer
@@ -28,7 +29,7 @@ def scan(
     from core.analysis.github_clone import cleanup_target, resolve_scan_target
     from core.analysis.pipeline import analyze_repo
 
-    async def _run() -> dict:
+    async def _run() -> dict[str, Any]:
         # Always resolve (clone GitHub if needed), then analyze. Preserve metadata.
         t = await resolve_scan_target(target)
         try:

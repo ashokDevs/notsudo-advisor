@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 _VERSION_RE = re.compile(
     r"""
@@ -120,7 +121,7 @@ def version_in_osv_events(version: str, events: list[dict[str, str]]) -> bool:
     return False
 
 
-def version_affected_by_ranges(version: str, ranges: list[dict]) -> bool:
+def version_affected_by_ranges(version: str, ranges: list[dict[str, Any]]) -> bool:
     """True if version is in any OSV-style range object."""
     if not ranges:
         return True
@@ -137,7 +138,7 @@ def version_affected_by_ranges(version: str, ranges: list[dict]) -> bool:
     return not any_events
 
 
-def first_fixed_version(ranges: list[dict]) -> str | None:
+def first_fixed_version(ranges: list[dict[str, Any]]) -> str | None:
     for r in ranges:
         for ev in r.get("events") or []:
             if isinstance(ev, dict) and "fixed" in ev:

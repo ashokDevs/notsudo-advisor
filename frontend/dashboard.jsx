@@ -130,6 +130,8 @@ function App() {
         llm_enabled: data.llm_enabled,
         llm_provider: data.llm_provider,
         path: data.path,
+        // Where fix-PRs will open (scanned GitHub repo, or GITHUB_DEMO_REPO for local)
+        pr_target_repo: data.pr_target_repo || null,
       });
       if (!data.advisories || data.advisories.length === 0) {
         setScanError(null); // not an error — clean scan
@@ -149,6 +151,11 @@ function App() {
   const openPR = useCallback(async (a) => {
     setPrState(s => ({ ...s, [a.id]: { status: "loading" } }));
     try {
+      // Prefer the repo that was actually scanned (GitHub URL scans).
+      // Local demo_app falls back to GITHUB_DEMO_REPO via scanMeta / server.
+      const targetRepo = (scanMeta && scanMeta.pr_target_repo)
+        || (me && me.repo)
+        || null;
       const res = await fetch("/api/pr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -157,6 +164,7 @@ function App() {
           verdict: a.verdict, confidence: a.confidence, reasoning: a.reasoning,
           quote: a.quote, quoteSource: a.quoteSource, entrypoints: a.entrypoints,
           evidence_quotes: a.evidence_quotes || [],
+          target_repo: targetRepo,
         }),
       });
       const data = await res.json();
@@ -171,7 +179,7 @@ function App() {
     } catch (e) {
       setPrState(s => ({ ...s, [a.id]: { status: "error", error: e.message } }));
     }
-  }, []);
+  }, [scanMeta, me]);
 
   const exposedCount = useMemo(() => advisories.filter(a => a.verdict === "exposed").length, [advisories]);
 
@@ -191,7 +199,8 @@ function App() {
                 advisories={advisories} me={me} prState={prState} onOpenPR={openPR}
                 onScan={handleScan} scanning={scanning} scanError={scanError}
                 scanMeta={scanMeta} repoName={repoName} health={health} hasScanned={hasScanned}
-                oauthBanner={oauthBanner} setOauthBanner={setOauthBanner} />
+                oauthBanner={oauthBanner} setOauthBanner={setOauthBanner}
+                prTargetRepo={(scanMeta && scanMeta.pr_target_repo) || (me && me.repo) || null} />
             )}
             {route === "repos" && (
               <ReposPage me={me} advisories={advisories} scanning={scanning} onScan={handleScan} repoName={repoName} scanMeta={scanMeta} />
@@ -323,7 +332,7 @@ function GitHubAuth({ me }) {
 // ─────────────────────────────────────────────────────────────
 // PAGE: ADVISORIES
 // ─────────────────────────────────────────────────────────────
-function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, scanError, scanMeta, repoName, health, hasScanned, oauthBanner, setOauthBanner }) {
+function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, scanError, scanMeta, repoName, health, hasScanned, oauthBanner, setOauthBanner, prTargetRepo }) {
   return (
     <F>
       <div className="hero-line mono">
@@ -339,7 +348,7 @@ function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, s
       <ConfigBar health={health} me={me} scanMeta={scanMeta} />
       <ScanBar onScan={onScan} scanning={scanning} error={scanError} />
       {(hasScanned || (advisories && advisories.length > 0)) && (
-        <SummaryStrip advisories={advisories} scanMeta={scanMeta} repoName={repoName} />
+        <SummaryStrip advisories={advisories} scanMeta={scanMeta} repoName={repoName} prTargetRepo={prTargetRepo} />
       )}
       {scanning && advisories.length === 0 && (
         <div className="mono empty-scan">Running live scan… querying OSV and reading source</div>
@@ -350,7 +359,7 @@ function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, s
           Try another target (e.g. OWASP/NodeGoat).
         </div>
       )}
-      <AdvisoryTable advisories={advisories} me={me} prState={prState} onOpenPR={onOpenPR} />
+      <AdvisoryTable advisories={advisories} me={me} prState={prState} onOpenPR={onOpenPR} prTargetRepo={prTargetRepo} />
     </F>
   );
 }
@@ -433,7 +442,7 @@ function ScanBar({ onScan, scanning, error }) {
   );
 }
 
-function SummaryStrip({ advisories, scanMeta, repoName }) {
+function SummaryStrip({ advisories, scanMeta, repoName, prTargetRepo }) {
   const counts = useMemo(() => {
     if (scanMeta && scanMeta.summary) return scanMeta.summary;
     return {
@@ -462,6 +471,11 @@ function SummaryStrip({ advisories, scanMeta, repoName }) {
           <a className="mono" style={{fontSize:11, color:"var(--primary-2)"}} href={scanMeta.github_url} target="_blank" rel="noreferrer">
             view on GitHub ↗
           </a>
+        )}
+        {prTargetRepo && (
+          <span className="mono" style={{fontSize:11, color:"var(--text-muted)"}}>
+            fix PRs → <strong style={{color:"var(--text-2)"}}>{prTargetRepo}</strong>
+          </span>
         )}
       </div>
       <div className="summary-strip__stats">
@@ -631,7 +645,7 @@ function SettingsPage({ me, t, setTweak }) {
 // ─────────────────────────────────────────────────────────────
 // ADVISORY TABLE
 // ─────────────────────────────────────────────────────────────
-function AdvisoryTable({ advisories, me, prState, onOpenPR }) {
+function AdvisoryTable({ advisories, me, prState, onOpenPR, prTargetRepo }) {
   // Default to exposed — the win demo filter
   const [filter, setFilter] = useState("exposed");
   const [query, setQuery] = useState("");
@@ -696,7 +710,8 @@ function AdvisoryTable({ advisories, me, prState, onOpenPR }) {
 
         {filtered.map((a, idx) => (
           <Row key={a.id} a={a} open={openId === a.id} onToggle={()=>setOpenId(openId===a.id ? null : a.id)}
-               last={idx === filtered.length - 1} me={me} pr={prState?.[a.id]} onOpenPR={onOpenPR} />
+               last={idx === filtered.length - 1} me={me} pr={prState?.[a.id]} onOpenPR={onOpenPR}
+               prTargetRepo={prTargetRepo} />
         ))}
 
         {filtered.length === 0 && (
@@ -720,7 +735,7 @@ function FilterChip({ active, onClick, label, count, tone }) {
   );
 }
 
-function Row({ a, open, onToggle, last, me, pr, onOpenPR }) {
+function Row({ a, open, onToggle, last, me, pr, onOpenPR, prTargetRepo }) {
   return (
     <F>
       <button onClick={onToggle} className={`tbl-row tbl-body${open ? " is-open" : ""}`}
@@ -743,7 +758,7 @@ function Row({ a, open, onToggle, last, me, pr, onOpenPR }) {
         <span style={{textAlign:"right", color:"var(--text-muted)"}}>›</span>
       </button>
 
-      {open && <ExpandedRow a={a} last={last} me={me} pr={pr} onOpenPR={onOpenPR} />}
+      {open && <ExpandedRow a={a} last={last} me={me} pr={pr} onOpenPR={onOpenPR} prTargetRepo={prTargetRepo} />}
     </F>
   );
 }
@@ -783,7 +798,7 @@ function ConfidenceBar({ c, v }) {
 // ─────────────────────────────────────────────────────────────
 // EXPANDED ROW
 // ─────────────────────────────────────────────────────────────
-function ExpandedRow({ a, last, me, pr, onOpenPR }) {
+function ExpandedRow({ a, last, me, pr, onOpenPR, prTargetRepo }) {
   const sites = a.call_sites || [];
   const entrypoints = a.entrypoints || [];
   const preflight = a.preflight;
@@ -864,7 +879,7 @@ function ExpandedRow({ a, last, me, pr, onOpenPR }) {
             </div>
           )}
 
-          <PRAction a={a} me={me} pr={pr} onOpenPR={onOpenPR} />
+          <PRAction a={a} me={me} pr={pr} onOpenPR={onOpenPR} prTargetRepo={prTargetRepo} />
         </div>
       </div>
     </div>
@@ -884,12 +899,13 @@ function Block({ label, accent, children }) {
 // ─────────────────────────────────────────────────────────────
 // PR ACTION
 // ─────────────────────────────────────────────────────────────
-function PRAction({ a, me, pr, onOpenPR }) {
+function PRAction({ a, me, pr, onOpenPR, prTargetRepo }) {
   const oauth = !!(me && me.user);
   const pat = !!(me && me.pat_configured);
   const canPr = oauth || pat;
   const primary = a.verdict === "exposed";
-  const target = (me && me.repo) || "GITHUB_DEMO_REPO";
+  // Prefer scanned GitHub repo; else configured demo repo
+  const target = prTargetRepo || (me && me.repo) || "GITHUB_DEMO_REPO";
 
   if (pr && pr.status === "done") {
     return (

@@ -14,6 +14,8 @@ async def scan_repo(repo_path: str) -> dict[str, Any]:
     Public API entry — accepts a local path OR GitHub URL / owner/repo.
     Clones public GitHub repos into a temp dir, scans, then cleans up.
     """
+    from core.config import github_demo_repo
+
     target = await resolve_scan_target(repo_path)
     try:
         result = await analyze_repo(str(target.path), run_preflight=True)
@@ -22,9 +24,16 @@ async def scan_repo(repo_path: str) -> dict[str, Any]:
             result["repo"] = target.display_name
             result["github_url"] = target.github_url
             result["source"] = "github"
+            # Fix PRs should open on the *scanned* GitHub repo (not GITHUB_DEMO_REPO)
+            if target.owner and target.repo:
+                result["pr_target_repo"] = f"{target.owner}/{target.repo}"
+            else:
+                result["pr_target_repo"] = target.display_name
         else:
             result["source"] = "local"
             result.setdefault("github_url", None)
+            # Local / demo_app scans fall back to configured demo repo for PRs
+            result["pr_target_repo"] = github_demo_repo()
         result["display_name"] = target.display_name
         result["scan_target"] = repo_path
         # Summary helpers for the win-demo UI

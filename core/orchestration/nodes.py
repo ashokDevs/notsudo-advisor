@@ -129,7 +129,7 @@ async def locate_node(state: AgentState) -> dict[str, Any]:
     logger.info("locate", package=state.get("package_name"))
 
     if state.get("is_exposed") is False:
-        return state
+        return dict(state)
 
     repo = _repo(state)
     package_name = state.get("package_name") or ""
@@ -154,7 +154,7 @@ async def reason_node(state: AgentState) -> dict[str, Any]:
     logger.info("reason", package=state.get("package_name"))
 
     if state.get("is_exposed") is False:
-        return state
+        return dict(state)
 
     repo = _repo(state)
     raw_sites = state.get("call_sites") or state.get("retrieved_context") or []

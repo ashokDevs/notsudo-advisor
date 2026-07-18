@@ -213,7 +213,8 @@ def _bump_manifest(text: str, pkg: str, fix: str) -> str:
     if n == 0:
         raise ValueError(
             f"{pkg} not found in package.json of the PR target repo. "
-            f"PRs open against GITHUB_DEMO_REPO, not necessarily the scanned path."
+            f"Scan a GitHub URL that actually contains `{pkg}`, or set GITHUB_DEMO_REPO "
+            f"to a repo whose package.json includes that dependency."
         )
     return new_text
 

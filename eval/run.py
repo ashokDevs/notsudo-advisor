@@ -4,6 +4,7 @@ import asyncio
 import json
 import math
 from pathlib import Path
+from typing import Any
 
 from core.observability.logging import get_logger
 
@@ -18,7 +19,7 @@ async def run_eval() -> None:
 
     from core.analysis.pipeline import analyze_advisory_against_repo
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     demo = Path(__file__).resolve().parents[1] / "demo_app"
 
     with open(eval_file, encoding="utf-8") as f:
