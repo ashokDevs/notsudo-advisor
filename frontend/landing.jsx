@@ -112,12 +112,13 @@ function Nav() {
           ) : (
             <>
               <a
-                href={oauthReady ? "/auth/github/login?next=/Dashboard.html" : "/auth/github/login?next=/Dashboard.html"}
+                href="/auth/github/login?next=/Dashboard.html"
                 className="btn btn--ghost btn--sm"
                 style={{display:"inline-flex", alignItems:"center", gap:8}}
-                title={oauthReady ? "Sign in with GitHub" : "GitHub OAuth — configure CLIENT_ID/SECRET if this fails"}
+                title="Sign in with GitHub (OAuth)"
+                data-oauth-signin="1"
               >
-                <GithubIcon size={14} /> Sign in
+                <GithubIcon size={14} /> Sign in with GitHub
               </a>
               <a href="Dashboard.html" className="btn btn--primary btn--sm">
                 Open dashboard <span style={{opacity:0.7}}>→</span>
