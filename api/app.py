@@ -197,42 +197,59 @@ async def fix_local(req: LocalFixRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _oauth_error_redirect(message: str) -> RedirectResponse:
+    from urllib.parse import quote
+
+    return RedirectResponse(url=f"/Dashboard.html?oauth_error={quote(message[:300])}")
+
+
 @app.get("/auth/github/login")
 async def github_login(request: Request) -> RedirectResponse:
     if not github_api.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "GitHub OAuth incomplete. Set GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET "
-                "and APP_BASE_URL=https://your-public-url. Or set GITHUB_TOKEN for PAT PRs."
-            ),
+        return _oauth_error_redirect(
+            "OAuth not configured. Set GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET on Render, "
+            "or use GITHUB_TOKEN for PRs without Sign in."
         )
     state = secrets.token_urlsafe(24)
     request.session["oauth_state"] = state
     base = _public_base(request)
+    logger.info("oauth login start", base=base, callback=f"{base}/auth/github/callback")
     return RedirectResponse(url=github_api.authorize_url(state, base_url=base))
 
 
 @app.get("/auth/github/callback")
 async def github_callback(
-    request: Request, code: str = "", state: str = ""
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
 ) -> RedirectResponse:
+    if error:
+        return _oauth_error_redirect(error_description or error)
     expected = request.session.get("oauth_state")
-    if not state or state != expected:
-        raise HTTPException(status_code=400, detail="OAuth state mismatch — try Sign in again")
+    if not state or not expected or state != expected:
+        return _oauth_error_redirect(
+            "OAuth state mismatch (session cookie lost). "
+            "Set APP_BASE_URL=https://notsudo-advisor.onrender.com, "
+            "OAuth callback=https://notsudo-advisor.onrender.com/auth/github/callback, "
+            "then try Sign in again in the same browser."
+        )
     request.session.pop("oauth_state", None)
     base = _public_base(request)
     try:
         token = await github_api.exchange_code(code, base_url=base)
         user = await github_api.get_user(token)
     except (ValueError, httpx.HTTPError) as exc:
-        raise HTTPException(status_code=502, detail=f"GitHub login failed: {exc}") from exc
+        logger.error("oauth callback failed", error=str(exc))
+        return _oauth_error_redirect(f"GitHub login failed: {exc}")
     request.session["gh_token"] = token
     request.session["gh_user"] = user
-    return RedirectResponse(url="/Dashboard.html")
+    return RedirectResponse(url="/Dashboard.html?oauth=ok")
 
 
 @app.post("/auth/logout")
+@app.post("/api/logout")
 async def logout(request: Request) -> dict[str, bool]:
     request.session.clear()
     return {"ok": True}
@@ -256,8 +273,22 @@ async def me(request: Request) -> JSONResponse:
             "can_open_pr": bool(user) or bool(s["github_pat"]),
             "public_url": app_base_url(),
             "online": is_production(),
+            "oauth_callback": f"{app_base_url()}/auth/github/callback",
         }
     )
+
+
+@app.get("/api/github/status")
+async def github_status(request: Request) -> dict[str, Any]:
+    """Diagnose whether the PAT/OAuth token can open PRs on GITHUB_DEMO_REPO."""
+    token = github_api.resolve_write_token(request.session.get("gh_token"))
+    if not token:
+        return {
+            "ok": False,
+            "error": "No token — set GITHUB_TOKEN on Render or Sign in with GitHub",
+            "repo": github_api.github_demo_repo(),
+        }
+    return await github_api.verify_write_access(token)
 
 
 @app.post("/api/pr")
@@ -267,8 +298,9 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
         raise HTTPException(
             status_code=401,
             detail=(
-                "No GitHub credentials for writing PRs. Set GITHUB_TOKEN on the host, "
-                "or complete OAuth (CLIENT_ID + CLIENT_SECRET + Sign in)."
+                "No GitHub credentials for writing PRs. Set GITHUB_TOKEN on Render "
+                "(fine-grained: Contents + Pull requests write on the demo repo), "
+                "or Sign in with GitHub."
             ),
         )
     if not req.fix:
@@ -284,6 +316,7 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
             advisory=req.model_dump(),
         )
     except ValueError as exc:
+        # Permission / validation errors — surface as 400 with clear text
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"Could not open PR: {exc}") from exc

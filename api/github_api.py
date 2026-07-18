@@ -13,6 +13,9 @@ from core.config import (
     github_oauth_credentials,
     github_token,
 )
+from core.observability.logging import get_logger
+
+logger = get_logger(__name__)
 
 OAUTH_SCOPES: str = "repo"
 
@@ -30,7 +33,6 @@ def _client_secret() -> str:
     return github_oauth_credentials()[1]
 
 
-# Dynamic aliases (not frozen at import time)
 def __getattr__(name: str) -> Any:
     if name == "GITHUB_CLIENT_ID":
         return _client_id()
@@ -82,9 +84,8 @@ async def exchange_code(code: str, base_url: str | None = None) -> str:
         payload = resp.json()
     token = payload.get("access_token")
     if not token:
-        raise ValueError(
-            f"GitHub did not return a token: {payload.get('error_description', payload)}"
-        )
+        err = payload.get("error_description") or payload.get("error") or payload
+        raise ValueError(f"GitHub did not return a token: {err}")
     return str(token)
 
 
@@ -93,19 +94,112 @@ def _auth_headers(token: str) -> dict[str, str]:
         "Authorization": f"Bearer {token}",
         "Accept": "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "NotSudo-Advisor",
     }
+
+
+def _http_error_detail(resp: httpx.Response, action: str) -> str:
+    """Turn GitHub HTTP errors into actionable messages."""
+    body: dict[str, Any] = {}
+    try:
+        parsed = resp.json()
+        if isinstance(parsed, dict):
+            body = parsed
+    except Exception:
+        body = {}
+    msg = str(body.get("message") or resp.text or resp.reason_phrase)[:300]
+    if resp.status_code == 401:
+        return (
+            f"{action}: GitHub 401 Unauthorized — token invalid/expired. "
+            f"Create a new fine-grained PAT or re-do OAuth sign-in. ({msg})"
+        )
+    if resp.status_code == 403:
+        return (
+            f"{action}: GitHub 403 Forbidden — token cannot write to this repo. "
+            f"For fine-grained PATs grant on {github_demo_repo()}: "
+            f"Contents=Read and write, Pull requests=Read and write. "
+            f"Classic PATs need the `repo` scope. ({msg})"
+        )
+    if resp.status_code == 404:
+        return (
+            f"{action}: GitHub 404 — repo or file not found (or token cannot see it). "
+            f"Check GITHUB_DEMO_REPO={github_demo_repo()} exists and has package.json. ({msg})"
+        )
+    return f"{action}: GitHub HTTP {resp.status_code}: {msg}"
 
 
 async def get_user(token: str) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
         resp = await client.get(f"{_API}/user", headers=_auth_headers(token))
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            raise ValueError(_http_error_detail(resp, "get user"))
         u = resp.json()
     return {
         "login": u.get("login"),
         "name": u.get("name"),
         "avatar_url": u.get("avatar_url"),
     }
+
+
+async def verify_write_access(token: str, repo: str | None = None) -> dict[str, Any]:
+    """Check whether the token can read the target repo and likely open PRs."""
+    target = repo or github_demo_repo()
+    out: dict[str, Any] = {
+        "repo": target,
+        "ok": False,
+        "login": None,
+        "can_read": False,
+        "can_push": False,
+        "has_package_json": False,
+        "default_branch": None,
+        "error": None,
+    }
+    headers = _auth_headers(token)
+    try:
+        async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
+            u = await client.get(f"{_API}/user")
+            if u.status_code >= 400:
+                out["error"] = _http_error_detail(u, "verify token")
+                return out
+            out["login"] = u.json().get("login")
+
+            r = await client.get(f"{_API}/repos/{target}")
+            if r.status_code >= 400:
+                out["error"] = _http_error_detail(r, f"read repo {target}")
+                return out
+            data = r.json()
+            out["can_read"] = True
+            out["default_branch"] = data.get("default_branch")
+            perms = data.get("permissions") or {}
+            out["can_push"] = bool(perms.get("push") or perms.get("admin"))
+            out["permissions"] = perms
+
+            pkg = await client.get(
+                f"{_API}/repos/{target}/contents/package.json",
+                params={"ref": out["default_branch"] or "main"},
+            )
+            out["has_package_json"] = pkg.status_code == 200
+            if pkg.status_code == 404:
+                out["error"] = (
+                    f"{target} has no package.json on the default branch — "
+                    "PRs need a package.json to bump versions."
+                )
+                return out
+            if pkg.status_code >= 400:
+                out["error"] = _http_error_detail(pkg, "read package.json")
+                return out
+
+            if not out["can_push"]:
+                out["error"] = (
+                    f"Token user @{out['login']} cannot push to {target}. "
+                    "Fine-grained PAT: Contents + Pull requests = Read and write on this repo. "
+                    "Or use a classic PAT with `repo` scope."
+                )
+                return out
+            out["ok"] = True
+    except httpx.HTTPError as exc:
+        out["error"] = f"network error talking to GitHub: {exc}"
+    return out
 
 
 def _bump_manifest(text: str, pkg: str, fix: str) -> str:
@@ -117,7 +211,10 @@ def _bump_manifest(text: str, pkg: str, fix: str) -> str:
 
     new_text, n = pattern.subn(repl, text)
     if n == 0:
-        raise ValueError(f"{pkg} not found in package.json")
+        raise ValueError(
+            f"{pkg} not found in package.json of the PR target repo. "
+            f"PRs open against GITHUB_DEMO_REPO, not necessarily the scanned path."
+        )
     return new_text
 
 
@@ -178,22 +275,27 @@ async def open_fix_pr(
     headers = _auth_headers(token)
     advisory_id = str(advisory.get("id", "fix"))
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", advisory_id).strip("-").lower()[:24]
-    branch = f"notsudo/fix-{pkg}-{slug}"
+    # package names can include @scope/
+    safe_pkg = re.sub(r"[^a-zA-Z0-9._-]+", "-", pkg).strip("-")[:40]
+    branch = f"notsudo/fix-{safe_pkg}-{slug}"[:100]
 
     async with httpx.AsyncClient(timeout=_TIMEOUT, headers=headers) as client:
         r = await client.get(f"{_API}/repos/{repo}")
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise ValueError(_http_error_detail(r, f"open PR on {repo}"))
         default_branch = r.json().get("default_branch", "main")
 
         r = await client.get(f"{_API}/repos/{repo}/git/ref/heads/{default_branch}")
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise ValueError(_http_error_detail(r, f"read branch {default_branch}"))
         base_sha = r.json()["object"]["sha"]
 
         r = await client.get(
             f"{_API}/repos/{repo}/contents/package.json",
             params={"ref": default_branch},
         )
-        r.raise_for_status()
+        if r.status_code >= 400:
+            raise ValueError(_http_error_detail(r, "read package.json"))
         file_json = r.json()
         file_sha = file_json["sha"]
         original = base64.b64decode(file_json["content"]).decode("utf-8")
@@ -206,8 +308,19 @@ async def open_fix_pr(
             f"{_API}/repos/{repo}/git/refs",
             json={"ref": f"refs/heads/{branch}", "sha": base_sha},
         )
-        if ref_resp.status_code != 422:
-            ref_resp.raise_for_status()
+        if ref_resp.status_code == 422:
+            # branch exists — update ref to latest base then continue
+            pass
+        elif ref_resp.status_code >= 400:
+            raise ValueError(_http_error_detail(ref_resp, "create branch (needs Contents: write)"))
+
+        # If branch already exists, get package.json sha on that branch for update
+        branch_pkg = await client.get(
+            f"{_API}/repos/{repo}/contents/package.json",
+            params={"ref": branch},
+        )
+        if branch_pkg.status_code == 200:
+            file_sha = branch_pkg.json()["sha"]
 
         put = await client.put(
             f"{_API}/repos/{repo}/contents/package.json",
@@ -218,7 +331,8 @@ async def open_fix_pr(
                 "sha": file_sha,
             },
         )
-        put.raise_for_status()
+        if put.status_code >= 400:
+            raise ValueError(_http_error_detail(put, "commit package.json bump (Contents: write)"))
 
         pr = await client.post(
             f"{_API}/repos/{repo}/pulls",
@@ -230,20 +344,23 @@ async def open_fix_pr(
             },
         )
         if pr.status_code == 422:
+            owner = repo.split("/")[0]
             existing = await client.get(
                 f"{_API}/repos/{repo}/pulls",
-                params={"head": f"{repo.split('/')[0]}:{branch}", "state": "open"},
+                params={"head": f"{owner}:{branch}", "state": "open"},
             )
-            existing.raise_for_status()
-            items = existing.json()
-            if items:
-                return {
-                    "url": items[0]["html_url"],
-                    "number": items[0]["number"],
-                    "branch": branch,
-                    "reused": True,
-                }
-        pr.raise_for_status()
+            if existing.status_code == 200:
+                items = existing.json()
+                if items:
+                    return {
+                        "url": items[0]["html_url"],
+                        "number": items[0]["number"],
+                        "branch": branch,
+                        "reused": True,
+                    }
+            raise ValueError(_http_error_detail(pr, "create pull request"))
+        if pr.status_code >= 400:
+            raise ValueError(_http_error_detail(pr, "create pull request (Pull requests: write)"))
         data = pr.json()
 
     return {

@@ -85,9 +85,23 @@ function App() {
   const [me, setMe]           = useState(null);
   const [prState, setPrState] = useState({});
 
+  const [oauthBanner, setOauthBanner] = useState(null);
+
   useEffect(() => {
     fetch("/api/me").then(r => r.json()).then(setMe).catch(() => setMe({ user: null, configured: false }));
     fetch("/api/health").then(r => r.json()).then(setHealth).catch(() => setHealth(null));
+    // Surface OAuth redirect errors (?oauth_error=...)
+    try {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get("oauth_error")) {
+        setOauthBanner({ type: "error", text: q.get("oauth_error") });
+        window.history.replaceState({}, "", window.location.pathname + window.location.hash);
+      } else if (q.get("oauth") === "ok") {
+        setOauthBanner({ type: "ok", text: "Signed in with GitHub." });
+        window.history.replaceState({}, "", window.location.pathname + window.location.hash);
+        fetch("/api/me").then(r => r.json()).then(setMe).catch(() => {});
+      }
+    } catch (_) { /* ignore */ }
   }, []);
 
   const handleScan = useCallback(async (target) => {
@@ -146,7 +160,13 @@ function App() {
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || "PR failed");
+      if (!res.ok) {
+        const detail = data.detail;
+        const msg = typeof detail === "string" ? detail
+          : Array.isArray(detail) ? detail.map(d => d.msg || JSON.stringify(d)).join("; ")
+          : (detail && JSON.stringify(detail)) || "PR failed";
+        throw new Error(msg);
+      }
       setPrState(s => ({ ...s, [a.id]: { status: "done", url: data.url, number: data.number } }));
     } catch (e) {
       setPrState(s => ({ ...s, [a.id]: { status: "error", error: e.message } }));
@@ -170,7 +190,8 @@ function App() {
               <AdvisoriesPage
                 advisories={advisories} me={me} prState={prState} onOpenPR={openPR}
                 onScan={handleScan} scanning={scanning} scanError={scanError}
-                scanMeta={scanMeta} repoName={repoName} health={health} hasScanned={hasScanned} />
+                scanMeta={scanMeta} repoName={repoName} health={health} hasScanned={hasScanned}
+                oauthBanner={oauthBanner} setOauthBanner={setOauthBanner} />
             )}
             {route === "repos" && (
               <ReposPage me={me} advisories={advisories} scanning={scanning} onScan={handleScan} repoName={repoName} scanMeta={scanMeta} />
@@ -302,13 +323,19 @@ function GitHubAuth({ me }) {
 // ─────────────────────────────────────────────────────────────
 // PAGE: ADVISORIES
 // ─────────────────────────────────────────────────────────────
-function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, scanError, scanMeta, repoName, health, hasScanned }) {
+function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, scanError, scanMeta, repoName, health, hasScanned, oauthBanner, setOauthBanner }) {
   return (
     <F>
       <div className="hero-line mono">
         Dependabot flags <em>packages</em>. NotSudo flags only what your code can <em>actually hit</em>.
         <span style={{color:"var(--text-muted)"}}> · live OSV + clone · no static sample data</span>
       </div>
+      {oauthBanner && (
+        <div className={`oauth-banner mono ${oauthBanner.type === "error" ? "is-error" : "is-ok"}`}>
+          <span>{oauthBanner.type === "error" ? "✕" : "✓"} {oauthBanner.text}</span>
+          <button type="button" className="linkish" onClick={() => setOauthBanner && setOauthBanner(null)}>dismiss</button>
+        </div>
+      )}
       <ConfigBar health={health} me={me} scanMeta={scanMeta} />
       <ScanBar onScan={onScan} scanning={scanning} error={scanError} />
       {(hasScanned || (advisories && advisories.length > 0)) && (
@@ -862,6 +889,7 @@ function PRAction({ a, me, pr, onOpenPR }) {
   const pat = !!(me && me.pat_configured);
   const canPr = oauth || pat;
   const primary = a.verdict === "exposed";
+  const target = (me && me.repo) || "GITHUB_DEMO_REPO";
 
   if (pr && pr.status === "done") {
     return (
@@ -881,7 +909,7 @@ function PRAction({ a, me, pr, onOpenPR }) {
           </a>
         ) : (
           <span className="mono" style={{fontSize:11.5, color:"var(--text-muted)", textAlign:"center", lineHeight:1.5}}>
-            Set <code>GITHUB_TOKEN</code> or OAuth to open fix PRs. Local draft is already ready when exposed.
+            Set <code>GITHUB_TOKEN</code> (Contents + PR write) on Render, or configure OAuth Sign in.
           </span>
         )
       ) : (
@@ -892,8 +920,22 @@ function PRAction({ a, me, pr, onOpenPR }) {
             : a.fix ? `Open fix PR → ${a.pkg}@${a.fix}` : "No fix available"}
         </button>
       )}
-      {pr && pr.status === "error" && <span className="mono" style={{fontSize:11.5, color:"var(--danger-2)"}}>✕ {pr.error}</span>}
-      {canPr && me && me.repo && <span className="mono" style={{fontSize:11, color:"var(--text-muted)", textAlign:"center"}}>→ {me.repo}</span>}
+      {pr && pr.status === "error" && (
+        <div className="mono pr-error">
+          ✕ {pr.error}
+          <div style={{marginTop:6, opacity:0.85}}>
+            Target repo: <strong>{target}</strong>. Token needs <strong>Contents: write</strong> + <strong>Pull requests: write</strong>.
+            Check <a href="/api/github/status" target="_blank" rel="noreferrer" style={{color:"var(--primary-2)"}}>/api/github/status</a>
+          </div>
+        </div>
+      )}
+      {canPr && (
+        <span className="mono" style={{fontSize:11, color:"var(--text-muted)", textAlign:"center"}}>
+          PRs open on <strong>{target}</strong>
+          {pat && !oauth ? " · using GITHUB_TOKEN (no sign-in required)" : ""}
+          {oauth ? ` · signed in as ${me.user.login}` : ""}
+        </span>
+      )}
       {a.pr_draft && a.verdict === "exposed" && (
         <span className="mono" style={{fontSize:11, color:"var(--safe-2)", textAlign:"center"}}>✓ PR body drafted with evidence</span>
       )}
@@ -963,6 +1005,10 @@ function DashboardStyles() {
   /* ── scan panel ── */
   .hero-line{ font-size:12.5px; color:var(--text-3); margin:0 2px; }
   .hero-line em{ color:var(--primary-2); font-style:normal; font-weight:600; }
+  .oauth-banner{ display:flex; justify-content:space-between; gap:12px; align-items:flex-start; padding:10px 12px; border-radius:var(--r-md); font-size:12px; line-height:1.45; }
+  .oauth-banner.is-error{ border:1px solid rgba(239,68,68,0.4); background:rgba(239,68,68,0.08); color:var(--danger-2); }
+  .oauth-banner.is-ok{ border:1px solid rgba(16,185,129,0.35); background:rgba(16,185,129,0.08); color:var(--safe-2); }
+  .pr-error{ font-size:11.5px; color:var(--danger-2); line-height:1.45; padding:8px 10px; border:1px solid rgba(239,68,68,0.3); border-radius:8px; background:rgba(239,68,68,0.06); }
   .config-bar{ display:flex; flex-wrap:wrap; gap:6px 10px; align-items:center; font-size:11.5px; color:var(--text-muted); padding:8px 12px; border:1px solid var(--border); border-radius:var(--r-md); background:var(--bg-deep); }
   .config-bar .ok{ color:var(--safe-2); }
   .config-bar .warn{ color:var(--warn-2); }
