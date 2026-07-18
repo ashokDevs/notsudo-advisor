@@ -201,23 +201,41 @@ async def fix_local(req: LocalFixRequest) -> dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
-def _oauth_error_redirect(message: str) -> RedirectResponse:
+def _safe_next(raw: str | None) -> str:
+    """Only allow same-site relative redirects after OAuth."""
+    if not raw:
+        return "/Dashboard.html"
+    path = raw.strip()
+    if not path.startswith("/") or path.startswith("//"):
+        return "/Dashboard.html"
+    # block weird schemes
+    if ":" in path.split("?", 1)[0]:
+        return "/Dashboard.html"
+    return path
+
+
+def _oauth_error_redirect(message: str, next_path: str = "/Dashboard.html") -> RedirectResponse:
     from urllib.parse import quote
 
-    return RedirectResponse(url=f"/Dashboard.html?oauth_error={quote(message[:300])}")
+    dest = _safe_next(next_path)
+    sep = "&" if "?" in dest else "?"
+    return RedirectResponse(url=f"{dest}{sep}oauth_error={quote(message[:300])}")
 
 
 @app.get("/auth/github/login")
-async def github_login(request: Request) -> RedirectResponse:
+async def github_login(request: Request, next: str = "/Dashboard.html") -> RedirectResponse:
+    next_path = _safe_next(next)
     if not github_api.is_configured():
         return _oauth_error_redirect(
             "OAuth not configured. Set GITHUB_CLIENT_ID + GITHUB_CLIENT_SECRET on Render, "
-            "or use GITHUB_TOKEN for PRs without Sign in."
+            "or use GITHUB_TOKEN for PRs without Sign in.",
+            next_path,
         )
     state = secrets.token_urlsafe(24)
     request.session["oauth_state"] = state
+    request.session["oauth_next"] = next_path
     base = _public_base(request)
-    logger.info("oauth login start", base=base, callback=f"{base}/auth/github/callback")
+    logger.info("oauth login start", base=base, callback=f"{base}/auth/github/callback", next=next_path)
     return RedirectResponse(url=github_api.authorize_url(state, base_url=base))
 
 
@@ -229,27 +247,31 @@ async def github_callback(
     error: str = "",
     error_description: str = "",
 ) -> RedirectResponse:
+    next_path = _safe_next(request.session.get("oauth_next"))
     if error:
-        return _oauth_error_redirect(error_description or error)
+        return _oauth_error_redirect(error_description or error, next_path)
     expected = request.session.get("oauth_state")
     if not state or not expected or state != expected:
         return _oauth_error_redirect(
             "OAuth state mismatch (session cookie lost). "
             "Set APP_BASE_URL=https://notsudo-advisor.onrender.com, "
             "OAuth callback=https://notsudo-advisor.onrender.com/auth/github/callback, "
-            "then try Sign in again in the same browser."
+            "then try Sign in again in the same browser.",
+            next_path,
         )
     request.session.pop("oauth_state", None)
+    request.session.pop("oauth_next", None)
     base = _public_base(request)
     try:
         token = await github_api.exchange_code(code, base_url=base)
         user = await github_api.get_user(token)
     except (ValueError, httpx.HTTPError) as exc:
         logger.error("oauth callback failed", error=str(exc))
-        return _oauth_error_redirect(f"GitHub login failed: {exc}")
+        return _oauth_error_redirect(f"GitHub login failed: {exc}", next_path)
     request.session["gh_token"] = token
     request.session["gh_user"] = user
-    return RedirectResponse(url="/Dashboard.html?oauth=ok")
+    sep = "&" if "?" in next_path else "?"
+    return RedirectResponse(url=f"{next_path}{sep}oauth=ok")
 
 
 @app.post("/auth/logout")

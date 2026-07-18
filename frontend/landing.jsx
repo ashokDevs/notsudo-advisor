@@ -44,9 +44,37 @@ function App() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// NAV
+// NAV  — real GitHub OAuth Sign in
 // ─────────────────────────────────────────────────────────────
+function GithubIcon({ size = 15 }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+      <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+    </svg>
+  );
+}
+
 function Nav() {
+  const [me, setMe] = useState(null);
+  const [authError, setAuthError] = useState(null);
+
+  useEffect(() => {
+    fetch("/api/me")
+      .then(r => r.json())
+      .then(setMe)
+      .catch(() => setMe({ user: null, configured: false }));
+    try {
+      const q = new URLSearchParams(window.location.search);
+      if (q.get("oauth_error")) {
+        setAuthError(q.get("oauth_error"));
+        window.history.replaceState({}, "", window.location.pathname);
+      }
+    } catch (_) { /* ignore */ }
+  }, []);
+
+  const user = me && me.user;
+  const oauthReady = me && me.configured;
+
   return (
     <header style={{
       position:"sticky", top:0, zIndex:20,
@@ -66,15 +94,55 @@ function Nav() {
         <nav style={{display:"flex", alignItems:"center", gap:28, fontSize:13, color:"var(--text-3)", whiteSpace:"nowrap"}}>
           <a href="#how" className="mono">how it works</a>
           <a href="#pricing" className="mono">pricing</a>
-          <a href="#docs" className="mono">docs</a>
+          <a href="https://github.com/ashokDevs/notsudo-advisor" className="mono" target="_blank" rel="noreferrer">docs</a>
         </nav>
         <div style={{display:"flex", alignItems:"center", gap:10, whiteSpace:"nowrap"}}>
-          <a href="#" className="btn btn--ghost btn--sm">Sign in</a>
-          <a href="Dashboard.html" className="btn btn--primary btn--sm">
-            Open dashboard <span style={{opacity:0.7}}>→</span>
-          </a>
+          {user ? (
+            <>
+              <a href="Dashboard.html" className="btn btn--ghost btn--sm" style={{display:"inline-flex", alignItems:"center", gap:8}}>
+                {user.avatar_url
+                  ? <img src={user.avatar_url} alt="" width={18} height={18} style={{borderRadius:"50%"}} />
+                  : <GithubIcon size={14} />}
+                <span className="mono">{user.login}</span>
+              </a>
+              <a href="Dashboard.html" className="btn btn--primary btn--sm">
+                Open dashboard <span style={{opacity:0.7}}>→</span>
+              </a>
+            </>
+          ) : (
+            <>
+              <a
+                href={oauthReady ? "/auth/github/login?next=/Dashboard.html" : "/auth/github/login?next=/Dashboard.html"}
+                className="btn btn--ghost btn--sm"
+                style={{display:"inline-flex", alignItems:"center", gap:8}}
+                title={oauthReady ? "Sign in with GitHub" : "GitHub OAuth — configure CLIENT_ID/SECRET if this fails"}
+              >
+                <GithubIcon size={14} /> Sign in
+              </a>
+              <a href="Dashboard.html" className="btn btn--primary btn--sm">
+                Open dashboard <span style={{opacity:0.7}}>→</span>
+              </a>
+            </>
+          )}
         </div>
       </div>
+      {authError && (
+        <div className="container" style={{paddingBottom:10}}>
+          <div className="mono" style={{
+            fontSize:12, color:"var(--danger-2)",
+            border:"1px solid rgba(239,68,68,0.35)",
+            background:"rgba(239,68,68,0.08)",
+            borderRadius:8, padding:"8px 12px",
+            display:"flex", justifyContent:"space-between", gap:12,
+          }}>
+            <span>✕ Sign in failed: {authError}</span>
+            <button type="button" onClick={() => setAuthError(null)}
+                    style={{background:"none", border:"none", color:"inherit", cursor:"pointer", fontFamily:"inherit"}}>
+              dismiss
+            </button>
+          </div>
+        </div>
+      )}
     </header>
   );
 }
@@ -823,9 +891,11 @@ function Pricing() {
                   </li>
                 ))}
               </ul>
-              <button className={`btn ${t.highlight ? "btn--primary" : ""}`} style={{marginTop:"auto", justifyContent:"center"}}>
+              <a href="/auth/github/login?next=/Dashboard.html"
+                 className={`btn ${t.highlight ? "btn--primary" : ""}`}
+                 style={{marginTop:"auto", justifyContent:"center", textDecoration:"none"}}>
                 {t.cta}
-              </button>
+              </a>
             </div>
           ))}
         </div>
@@ -864,7 +934,12 @@ function FinalCTA() {
         <p style={{fontSize:16, color:"var(--text-3)", maxWidth:560, margin:"0 auto 30px"}}>
           Free for the first 50 advisories. No credit card. We&rsquo;ll show you what gets killed and why.
         </p>
-        <form onSubmit={(e)=>{e.preventDefault(); window.location.href="Dashboard.html";}} style={{
+        <form onSubmit={(e)=>{
+          e.preventDefault();
+          const t = (val || "").trim();
+          try { if (t) sessionStorage.setItem("notsudo_scan_target", t); } catch (_) {}
+          window.location.href = "Dashboard.html";
+        }} style={{
           display:"flex", gap:8, maxWidth: 560, margin:"0 auto",
           padding: 6,
           background:"var(--surface)",
@@ -876,6 +951,7 @@ function FinalCTA() {
           }}>$</span>
           <input value={val} onChange={(e)=>setVal(e.target.value)}
                  spellCheck={false}
+                 placeholder="https://github.com/org/repo"
                  style={{
                    flex:1, border:"none", outline:"none", background:"transparent",
                    fontFamily:"var(--font-mono)", fontSize: 14, color:"var(--text)",
@@ -885,6 +961,12 @@ function FinalCTA() {
             Run advisor <span style={{opacity:0.7}}>→</span>
           </button>
         </form>
+        <div style={{marginTop:16, display:"flex", justifyContent:"center", gap:12}}>
+          <a href="/auth/github/login?next=/Dashboard.html" className="btn btn--ghost btn--sm"
+             style={{display:"inline-flex", alignItems:"center", gap:8, textDecoration:"none"}}>
+            <GithubIcon size={14} /> Sign in with GitHub
+          </a>
+        </div>
       </div>
     </section>
   );

@@ -143,9 +143,17 @@ function App() {
     }
   }, []);
 
-  // Auto-run first live scan of demo_app so the UI is never static
+  // Prefer target from landing page form; else demo_app
   useEffect(() => {
-    handleScan("demo_app");
+    let target = "demo_app";
+    try {
+      const saved = sessionStorage.getItem("notsudo_scan_target");
+      if (saved && saved.trim()) {
+        target = saved.trim();
+        sessionStorage.removeItem("notsudo_scan_target");
+      }
+    } catch (_) { /* ignore */ }
+    handleScan(target);
   }, [handleScan]);
 
   const openPR = useCallback(async (a) => {
@@ -335,7 +343,7 @@ function GitHubAuth({ me }) {
   }
 
   return (
-    <a className="btn btn--primary btn--sm gh-signin" href="/auth/github/login">
+    <a className="btn btn--primary btn--sm gh-signin" href="/auth/github/login?next=/Dashboard.html">
       <GithubMark size={15} /> Sign in
     </a>
   );
