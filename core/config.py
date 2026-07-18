@@ -13,33 +13,168 @@ try:
 
     # override=False: real process env wins; .env fills gaps
     load_dotenv(_ENV_FILE, override=False)
-    # Also try cwd (when launched from elsewhere)
     load_dotenv(override=False)
 except ImportError:
     pass
 
 
+def _env(name: str, default: str = "") -> str:
+    """Read env var and strip whitespace/newlines (Render paste often adds \\n)."""
+    return (os.getenv(name, default) or default).strip().strip('"').strip("'")
+
+
 def _truthy(name: str, default: str = "") -> bool:
-    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+    return _env(name, default).lower() in {"1", "true", "yes", "on"}
+
+
+def _looks_like_secret_key(value: str) -> bool:
+    v = value.strip()
+    return (
+        v.startswith("sk-")
+        or v.startswith("sk-or-")
+        or v.startswith("ghp_")
+        or v.startswith("github_pat_")
+        or v.startswith("gho_")
+    )
+
+
+def _looks_like_url(value: str) -> bool:
+    v = value.strip().lower()
+    return v.startswith("http://") or v.startswith("https://")
+
+
+def _looks_like_database_url(value: str) -> bool:
+    v = value.strip().lower()
+    return v.startswith("postgres://") or v.startswith("postgresql://") or v.startswith("mysql://")
+
+
+def llm_api_key() -> str | None:
+    key = _env("OPENAI_API_KEY") or _env("LLM_API_KEY")
+    # Common misconfig: key pasted into OPENAI_API_BASE
+    base = _env("OPENAI_API_BASE") or _env("OPENAI_BASE_URL") or _env("LLM_BASE_URL")
+    if not key and base and _looks_like_secret_key(base):
+        key = base
+    return key or None
+
+
+def llm_base_url() -> str | None:
+    base = _env("OPENAI_API_BASE") or _env("OPENAI_BASE_URL") or _env("LLM_BASE_URL")
+    # Misconfig: API key put in base URL field
+    if base and _looks_like_secret_key(base):
+        base = ""
+    # Misconfig: non-URL garbage
+    if base and not _looks_like_url(base):
+        base = ""
+    base = base.rstrip("/")
+    # OpenRouter keys need the OpenRouter base even if user forgot it
+    key = llm_api_key() or ""
+    if not base and key.startswith("sk-or-"):
+        base = "https://openrouter.ai/api/v1"
+    return base or None
+
+
+def llm_models() -> tuple[str, str]:
+    frontier = _env("LLM_MODEL") or _env("LLM_FRONTIER_MODEL") or "gpt-4o"
+    cheap = _env("LLM_CHEAP_MODEL") or frontier
+    return cheap, frontier
+
+
+def app_base_url() -> str:
+    """
+    Public origin of this deployment.
+    Online: APP_BASE_URL=https://notsudo-advisor.onrender.com
+    """
+    explicit = _env("APP_BASE_URL")
+    # Misconfig: DATABASE_URL pasted into APP_BASE_URL
+    if explicit and (_looks_like_database_url(explicit) or _looks_like_secret_key(explicit)):
+        explicit = ""
+    if explicit and _looks_like_url(explicit):
+        return explicit.rstrip("/")
+
+    render = _env("RENDER_EXTERNAL_URL")
+    if render:
+        return render.rstrip("/")
+
+    railway = _env("RAILWAY_PUBLIC_DOMAIN")
+    if railway:
+        if railway.startswith("http"):
+            return railway.rstrip("/")
+        return f"https://{railway}"
+
+    # Last resort for known Render service name pattern
+    service = _env("RENDER_SERVICE_NAME")
+    if service:
+        return f"https://{service}.onrender.com"
+
+    return "http://localhost:8080"
+
+
+def is_production() -> bool:
+    if _truthy("NOTSUDO_PRODUCTION"):
+        return True
+    # Render always sets this
+    if _env("RENDER") or _env("RENDER_SERVICE_ID") or _env("RENDER_EXTERNAL_URL"):
+        return True
+    base = app_base_url()
+    return base.startswith("https://") and "localhost" not in base
+
+
+def session_https_only() -> bool:
+    if os.getenv("SESSION_HTTPS_ONLY") is not None:
+        return _truthy("SESSION_HTTPS_ONLY")
+    return is_production()
+
+
+def session_secret() -> str:
+    return _env("SESSION_SECRET") or "notsudo-dev-insecure-change-me"
+
+
+def github_token() -> str | None:
+    tok = _env("GITHUB_TOKEN")
+    return tok or None
+
+
+def github_oauth_credentials() -> tuple[str, str]:
+    return (_env("GITHUB_CLIENT_ID"), _env("GITHUB_CLIENT_SECRET"))
+
+
+def github_demo_repo() -> str:
+    return _env("GITHUB_DEMO_REPO") or "ashokDevs/notsudo-demo-app"
+
+
+def config_warnings() -> list[str]:
+    """Human-readable misconfiguration hints (safe to show in /api/health)."""
+    warnings: list[str] = []
+    raw_base = _env("OPENAI_API_BASE") or _env("OPENAI_BASE_URL") or _env("LLM_BASE_URL")
+    if raw_base and _looks_like_secret_key(raw_base):
+        warnings.append(
+            "OPENAI_API_BASE looks like an API key — set it to https://openrouter.ai/api/v1 "
+            "and put the key in OPENAI_API_KEY only"
+        )
+    raw_app = _env("APP_BASE_URL")
+    if raw_app and _looks_like_database_url(raw_app):
+        warnings.append(
+            "APP_BASE_URL is a database URL — set APP_BASE_URL=https://notsudo-advisor.onrender.com"
+        )
+    if not llm_api_key():
+        warnings.append("OPENAI_API_KEY missing — scans use heuristics only")
+    if not github_token() and not (_env("GITHUB_CLIENT_ID") and _env("GITHUB_CLIENT_SECRET")):
+        warnings.append("No GITHUB_TOKEN / OAuth — cannot open fix PRs")
+    return warnings
 
 
 @lru_cache(maxsize=1)
-def get_settings() -> dict[str, str | bool | None]:
-    """Snapshot of runtime config (no secrets returned to clients)."""
-    api_key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY") or ""
-    base = (
-        os.getenv("OPENAI_API_BASE")
-        or os.getenv("OPENAI_BASE_URL")
-        or os.getenv("LLM_BASE_URL")
-        or ""
-    ).rstrip("/")
-    model = os.getenv("LLM_MODEL") or os.getenv("LLM_FRONTIER_MODEL") or "gpt-4o"
-    cheap = os.getenv("LLM_CHEAP_MODEL") or model
-    provider = os.getenv("LLM_PROVIDER", "").strip().lower()
+def get_settings() -> dict[str, str | bool | None | list[str]]:
+    """Snapshot of runtime config — never include secret values."""
+    api_key = llm_api_key() or ""
+    base = llm_base_url()
+    model = llm_models()[1]
+    cheap = llm_models()[0]
+    provider = _env("LLM_PROVIDER").lower()
     if not provider:
-        if "openrouter" in base or api_key.startswith("sk-or-"):
+        if (base and "openrouter" in base) or api_key.startswith("sk-or-"):
             provider = "openrouter"
-        elif "localhost" in base or "127.0.0.1" in base:
+        elif base and ("localhost" in base or "127.0.0.1" in base):
             provider = "local"
         elif base:
             provider = "openai_compatible"
@@ -51,97 +186,25 @@ def get_settings() -> dict[str, str | bool | None]:
     return {
         "llm_provider": provider,
         "llm_configured": bool(api_key),
-        "llm_base_url": base or None,
+        # Redacted for public /api/health — never return secrets or full keys
+        "llm_base_url": base if base and not _looks_like_secret_key(base) else None,
         "llm_model": model,
         "llm_cheap_model": cheap,
-        "github_oauth": bool(os.getenv("GITHUB_CLIENT_ID") and os.getenv("GITHUB_CLIENT_SECRET")),
-        "github_client_id_set": bool(os.getenv("GITHUB_CLIENT_ID")),
-        "github_client_secret_set": bool(os.getenv("GITHUB_CLIENT_SECRET")),
-        "github_pat": bool(os.getenv("GITHUB_TOKEN")),
-        "github_demo_repo": os.getenv("GITHUB_DEMO_REPO", "ashokDevs/notsudo-demo-app"),
+        "github_oauth": bool(_env("GITHUB_CLIENT_ID") and _env("GITHUB_CLIENT_SECRET")),
+        "github_client_id_set": bool(_env("GITHUB_CLIENT_ID")),
+        "github_client_secret_set": bool(_env("GITHUB_CLIENT_SECRET")),
+        "github_pat": bool(github_token()),
+        "github_demo_repo": github_demo_repo(),
         "app_base_url": app_base_url(),
         "online": is_production(),
-        "database_url_set": bool(os.getenv("DATABASE_URL")),
+        "database_url_set": bool(_env("DATABASE_URL")),
         "hash_embeddings": _truthy("NOTSUDO_HASH_EMBEDDINGS", "1"),
         "env_file": str(_ENV_FILE) if _ENV_FILE.is_file() else None,
+        "warnings": config_warnings(),
     }
 
 
-def llm_api_key() -> str | None:
-    key = os.getenv("OPENAI_API_KEY") or os.getenv("LLM_API_KEY")
-    return key or None
-
-
-def llm_base_url() -> str | None:
-    base = (
-        os.getenv("OPENAI_API_BASE")
-        or os.getenv("OPENAI_BASE_URL")
-        or os.getenv("LLM_BASE_URL")
-        or ""
-    ).rstrip("/")
-    return base or None
-
-
-def llm_models() -> tuple[str, str]:
-    frontier = os.getenv("LLM_MODEL") or os.getenv("LLM_FRONTIER_MODEL") or "gpt-4o"
-    cheap = os.getenv("LLM_CHEAP_MODEL") or frontier
-    return cheap, frontier
-
-
-def github_oauth_credentials() -> tuple[str, str]:
-    return (
-        os.getenv("GITHUB_CLIENT_ID", "").strip(),
-        os.getenv("GITHUB_CLIENT_SECRET", "").strip(),
-    )
-
-
-def github_demo_repo() -> str:
-    return os.getenv("GITHUB_DEMO_REPO", "ashokDevs/notsudo-demo-app").strip()
-
-
-def app_base_url() -> str:
-    """
-    Public origin of this deployment.
-    Online: set APP_BASE_URL=https://your-app.onrender.com (required for OAuth).
-    """
-    explicit = (os.getenv("APP_BASE_URL") or "").strip().rstrip("/")
-    if explicit:
-        return explicit
-    render = (os.getenv("RENDER_EXTERNAL_URL") or "").strip().rstrip("/")
-    if render:
-        return render
-    railway = (os.getenv("RAILWAY_PUBLIC_DOMAIN") or "").strip()
-    if railway:
-        if railway.startswith("http"):
-            return railway.rstrip("/")
-        return f"https://{railway}"
-    return "http://localhost:8080"
-
-
-def is_production() -> bool:
-    if _truthy("NOTSUDO_PRODUCTION"):
-        return True
-    base = app_base_url()
-    return base.startswith("https://") and "localhost" not in base
-
-
-def session_https_only() -> bool:
-    """Secure cookies on HTTPS deployments."""
-    if os.getenv("SESSION_HTTPS_ONLY") is not None:
-        return _truthy("SESSION_HTTPS_ONLY")
-    return is_production()
-
-
-def session_secret() -> str:
-    return os.getenv("SESSION_SECRET") or "notsudo-dev-insecure-change-me"
-
-
-def github_token() -> str | None:
-    tok = os.getenv("GITHUB_TOKEN", "").strip()
-    return tok or None
-
-
-def reload_settings() -> dict[str, str | bool | None]:
+def reload_settings() -> dict[str, str | bool | None | list[str]]:
     get_settings.cache_clear()
     try:
         from dotenv import load_dotenv

@@ -288,6 +288,7 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
 @app.get("/api/health")
 async def health() -> dict[str, Any]:
     s = get_settings()
+    warnings = list(s.get("warnings") or [])
     return {
         "ok": True,
         "dynamic": True,
@@ -296,6 +297,7 @@ async def health() -> dict[str, Any]:
         "llm": s["llm_configured"],
         "llm_provider": s["llm_provider"],
         "llm_model": s["llm_model"],
+        # Never expose raw secrets — base URL only if it is a real http(s) URL
         "llm_base_url": s["llm_base_url"],
         "github_oauth": s["github_oauth"],
         "github_oauth_partial": bool(
@@ -304,6 +306,8 @@ async def health() -> dict[str, Any]:
         "github_pat": s["github_pat"],
         "demo_repo": s["github_demo_repo"],
         "env_loaded": bool(s["env_file"]),
+        "warnings": warnings,
+        "config_ok": len(warnings) == 0,
     }
 
 
