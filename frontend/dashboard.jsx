@@ -113,10 +113,19 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ target, repo_path: target }),
       });
-      const data = await res.json();
+      const body = await res.text();
+      let data;
+      try {
+        data = body ? JSON.parse(body) : null;
+      } catch (_) {
+        throw new Error(`Scan service returned an invalid response (${res.status}). Please retry.`);
+      }
       if (!res.ok) {
-        const detail = data.detail;
+        const detail = data?.detail;
         throw new Error(typeof detail === "string" ? detail : (detail && JSON.stringify(detail)) || "Scan failed");
+      }
+      if (!data) {
+        throw new Error("Scan service restarted before returning a result. Please retry in a moment.");
       }
       setHasScanned(true);
       setAdvisories(data.advisories || []);

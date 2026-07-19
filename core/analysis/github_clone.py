@@ -86,7 +86,18 @@ async def clone_github_repo(
     tmp = Path(tempfile.mkdtemp(prefix="notsudo-scan-"))
     dest = tmp / repo
 
-    cmd = [git, "clone", f"--depth={depth}", "--single-branch"]
+    # Public repositories can contain old tags and large binary blobs that are
+    # irrelevant to source analysis. Keep the clone small enough for constrained
+    # hosts such as Render's free instance; Git fetches a larger blob lazily only
+    # when the working tree actually needs it.
+    cmd = [
+        git,
+        "clone",
+        f"--depth={depth}",
+        "--single-branch",
+        "--no-tags",
+        "--filter=blob:limit=1m",
+    ]
     if branch:
         cmd.extend(["--branch", branch])
     cmd.extend([url, str(dest)])
