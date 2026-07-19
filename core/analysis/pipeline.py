@@ -359,6 +359,11 @@ async def analyze_repo(
             "pkg_count": 0,
             "vuln_count": 0,
             "path": str(repo),
+            "scan_status": "unsupported",
+            "scan_message": (
+                "No supported dependency manifest found. NotSudo currently scans "
+                "package.json, requirements.txt, and pyproject.toml repositories."
+            ),
         }
 
     llm = llm or get_llm_client()
@@ -399,6 +404,12 @@ async def analyze_repo(
         "path": str(repo),
         "exposed_count": sum(1 for a in advisories if a["verdict"] == "exposed"),
         "llm_enabled": llm.available,
+        "scan_status": "clean" if not advisories else "findings",
+        "scan_message": (
+            f"OSV found no published advisories for {len(packages)} direct dependencies."
+            if not advisories
+            else None
+        ),
     }
 
 

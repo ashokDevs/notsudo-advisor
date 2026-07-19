@@ -138,6 +138,8 @@ function App() {
         pkg_count: data.pkg_count,
         llm_enabled: data.llm_enabled,
         llm_provider: data.llm_provider,
+        scan_status: data.scan_status,
+        scan_message: data.scan_message,
         path: data.path,
         // Where fix-PRs will open (scanned GitHub repo, or GITHUB_DEMO_REPO for local)
         pr_target_repo: data.pr_target_repo || null,
@@ -374,7 +376,12 @@ function AdvisoriesPage({ advisories, me, prState, onOpenPR, onScan, scanning, s
       {scanning && advisories.length === 0 && (
         <div className="mono empty-scan">Running live scan… querying OSV and reading source</div>
       )}
-      {!scanning && hasScanned && advisories.length === 0 && (
+      {!scanning && hasScanned && advisories.length === 0 && scanMeta?.scan_status === "unsupported" && (
+        <div className="mono empty-scan">
+          <strong>Scan not supported for this repository.</strong> {scanMeta?.scan_message}
+        </div>
+      )}
+      {!scanning && hasScanned && advisories.length === 0 && scanMeta?.scan_status !== "unsupported" && (
         <div className="mono empty-scan">
           Scan complete — <strong>0 vulnerabilities</strong> on OSV for this tree ({scanMeta?.pkg_count ?? "?"} packages).
           Try another target (e.g. OWASP/NodeGoat).
