@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import re
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode
 
@@ -221,6 +225,70 @@ def _bump_manifest(text: str, pkg: str, fix: str) -> str:
     return new_text
 
 
+def _write_npm_inputs(
+    directory: Path,
+    package_json: str,
+    package_lock: str | None,
+    package_name: str,
+    fixed_version: str,
+) -> None:
+    patched_manifest = _bump_manifest(package_json, package_name, fixed_version)
+    (directory / "package.json").write_text(patched_manifest, encoding="utf-8")
+    if package_lock is not None:
+        (directory / "package-lock.json").write_text(package_lock, encoding="utf-8")
+
+
+def _read_npm_outputs(directory: Path) -> tuple[str, str]:
+    return (
+        (directory / "package.json").read_text(encoding="utf-8"),
+        (directory / "package-lock.json").read_text(encoding="utf-8"),
+    )
+
+
+async def _resolve_npm_files(
+    package_json: str,
+    package_lock: str | None,
+    package_name: str,
+    fixed_version: str,
+) -> tuple[str, str]:
+    """Resolve a real npm lockfile before any GitHub write is attempted."""
+    npm = shutil.which("npm")
+    if npm is None:
+        raise ValueError("npm is required to create a lockfile-safe fix PR")
+
+    with tempfile.TemporaryDirectory(prefix="notsudo-github-pr-") as temp_dir:
+        directory = Path(temp_dir)
+        await asyncio.to_thread(
+            _write_npm_inputs,
+            directory,
+            package_json,
+            package_lock,
+            package_name,
+            fixed_version,
+        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                npm,
+                "install",
+                "--package-lock-only",
+                "--ignore-scripts",
+                "--no-audit",
+                "--no-fund",
+                cwd=str(directory),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120.0)
+        except TimeoutError as exc:
+            raise ValueError("npm lockfile resolution timed out after 120 seconds") from exc
+        except OSError as exc:
+            raise ValueError(f"npm lockfile resolution failed to start: {exc}") from exc
+        if proc.returncode != 0:
+            output = (stderr or stdout or b"").decode("utf-8", errors="replace")[:500]
+            raise ValueError(f"npm lockfile resolution failed: {output}")
+        return await asyncio.to_thread(_read_npm_outputs, directory)
+
+
 def _pr_body(advisory: dict[str, Any], pkg: str, current: str, fix: str) -> str:
     quote = advisory.get("quote", "")
     source = advisory.get("quoteSource", advisory.get("id", ""))
@@ -304,10 +372,14 @@ async def open_fix_pr(
     merge_method: str | None = None,
 ) -> dict[str, Any]:
     """
-    Open a version-bump fix PR. When auto_merge is true (or GITHUB_AUTO_MERGE=1),
-    merges the PR immediately after creation.
+    Open a version-bump fix PR after resolving both the manifest and lockfile.
+
+    Auto-merge is deliberately disabled. A dependency PR must pass the target
+    repository's checks and be reviewed before it changes a default branch.
     """
-    do_merge = github_auto_merge() if auto_merge is None else auto_merge
+    if auto_merge or github_auto_merge():
+        logger.warning("auto-merge request ignored; human review is required", repo=repo)
+    do_merge = False
     method = merge_method or github_merge_method()
 
     headers = _auth_headers(token)
@@ -338,7 +410,21 @@ async def open_fix_pr(
         file_sha = file_json["sha"]
         original = base64.b64decode(file_json["content"]).decode("utf-8")
 
-        patched = _bump_manifest(original, pkg, fix)
+        lock_response = await client.get(
+            f"{_API}/repos/{repo}/contents/package-lock.json",
+            params={"ref": default_branch},
+        )
+        if lock_response.status_code == 404:
+            original_lock: str | None = None
+            lock_sha: str | None = None
+        elif lock_response.status_code >= 400:
+            raise ValueError(_http_error_detail(lock_response, "read package-lock.json"))
+        else:
+            lock_data = lock_response.json()
+            original_lock = base64.b64decode(lock_data["content"]).decode("utf-8")
+            lock_sha = str(lock_data["sha"])
+
+        patched, patched_lock = await _resolve_npm_files(original, original_lock, pkg, fix)
         if patched == original:
             raise ValueError(f"{pkg} is already at {fix}")
 
@@ -360,6 +446,13 @@ async def open_fix_pr(
         if branch_pkg.status_code == 200:
             file_sha = branch_pkg.json()["sha"]
 
+        branch_lock = await client.get(
+            f"{_API}/repos/{repo}/contents/package-lock.json",
+            params={"ref": branch},
+        )
+        if branch_lock.status_code == 200:
+            lock_sha = str(branch_lock.json()["sha"])
+
         put = await client.put(
             f"{_API}/repos/{repo}/contents/package.json",
             json={
@@ -371,6 +464,20 @@ async def open_fix_pr(
         )
         if put.status_code >= 400:
             raise ValueError(_http_error_detail(put, "commit package.json bump (Contents: write)"))
+
+        lock_put_payload: dict[str, str] = {
+            "message": f"fix({pkg}): update lockfile for {advisory_id}",
+            "content": base64.b64encode(patched_lock.encode("utf-8")).decode("ascii"),
+            "branch": branch,
+        }
+        if lock_sha is not None:
+            lock_put_payload["sha"] = lock_sha
+        lock_put = await client.put(
+            f"{_API}/repos/{repo}/contents/package-lock.json",
+            json=lock_put_payload,
+        )
+        if lock_put.status_code >= 400:
+            raise ValueError(_http_error_detail(lock_put, "commit package-lock.json update"))
 
         pr_title = f"fix({pkg}): bump to {fix} — remediate {advisory_id}"
         pr = await client.post(

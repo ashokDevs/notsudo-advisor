@@ -189,6 +189,8 @@ def config_warnings() -> list[str]:
         warnings.append("OPENAI_API_KEY missing — scans use heuristics only")
     if not github_token() and not (_env("GITHUB_CLIENT_ID") and _env("GITHUB_CLIENT_SECRET")):
         warnings.append("No GITHUB_TOKEN / OAuth — cannot open fix PRs")
+    if github_auto_merge():
+        warnings.append("GITHUB_AUTO_MERGE is ignored; NotSudo requires human PR review")
     return warnings
 
 

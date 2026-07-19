@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from uuid import UUID
 
@@ -19,6 +20,11 @@ _caps = CapabilityGraph.from_permissions()
 
 _db: Database | None = None
 _embedder: Embedder | None = None
+
+
+def _side_effect_node_identity() -> str:
+    """Read node identity from server configuration, never MCP client input."""
+    return os.getenv("NOTSUDO_MCP_NODE_ID", "").strip()
 
 
 async def get_db() -> Database:
@@ -253,15 +259,18 @@ async def preflight_lockfile(
 async def pr_create(
     title: str,
     body: str,
-    node: str = "draft_pr",
 ) -> str:
     """
     Side-effecting tool: create a PR draft description record.
     Actual GitHub API write is done by the API layer with user OAuth token.
     This tool only formats / records intent and is restricted to draft_pr/act.
     """
+    node = _side_effect_node_identity()
+    if node not in {"draft_pr", "act"}:
+        raise PermissionError(
+            "pr_create requires NOTSUDO_MCP_NODE_ID=draft_pr or act on the server"
+        )
     authorize(node, "pr_create")
-    # Structural isolation: refuse if node is not act/draft_pr (authorize already checks)
     return json.dumps(
         {
             "status": "draft_ready",

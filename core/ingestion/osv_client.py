@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import typing
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -9,6 +10,29 @@ import httpx
 from core.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+_MODIFIED_FEED = "https://storage.googleapis.com/osv-vulnerabilities/{ecosystem}/modified_id.csv"
+
+
+def parse_modified_ids(rows: Iterable[str], *, since: datetime, limit: int) -> list[str]:
+    """Read OSV's reverse-chronological modified_id.csv feed up to a watermark."""
+    if since.tzinfo is None:
+        since = since.replace(tzinfo=timezone.utc)
+    ids: list[str] = []
+    for row in rows:
+        modified_text, separator, advisory_id = row.strip().partition(",")
+        if not separator or not advisory_id:
+            continue
+        try:
+            modified = datetime.fromisoformat(modified_text.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if modified < since:
+            break
+        ids.append(advisory_id.strip())
+        if len(ids) >= limit:
+            break
+    return ids
 
 
 class OSVClient:
@@ -26,42 +50,31 @@ class OSVClient:
         response.raise_for_status()
         return typing.cast(dict[str, Any], response.json())
 
-    async def list_modified_since(self, ecosystem: str, timestamp: datetime) -> list[str]:
+    async def list_modified_since(
+        self,
+        ecosystem: str,
+        timestamp: datetime,
+        *,
+        max_results: int = 1_000,
+    ) -> list[str]:
         """
-        List advisory IDs modified since timestamp for an ecosystem via OSV query.
-        Pages through results best-effort.
+        List advisory IDs changed since timestamp via OSV's modified-id feed.
+
+        The /v1/query API only accepts a concrete package query; it cannot list
+        an ecosystem's changed advisories. The CSV is reverse chronological, so
+        the watermark lets us stop streaming as soon as older data is reached.
         """
-        if timestamp.tzinfo is None:
-            timestamp = timestamp.replace(tzinfo=timezone.utc)
-        url = f"{self.base_url}/query"
-        payload: dict[str, Any] = {
-            "package": {"ecosystem": ecosystem},
-            "page_token": "",
-        }
-        ids: list[str] = []
-        seen: set[str] = set()
-        for _ in range(10):  # hard page cap
-            response = await self._client.post(url, json={k: v for k, v in payload.items() if v != ""})
+        if max_results < 1:
+            raise ValueError("max_results must be at least 1")
+        url = _MODIFIED_FEED.format(ecosystem=ecosystem)
+        rows: list[str] = []
+        async with self._client.stream("GET", url) as response:
             response.raise_for_status()
-            data = response.json()
-            for v in data.get("vulns") or []:
-                vid = str(v.get("id", ""))
-                modified = v.get("modified")
-                if not vid or vid in seen:
-                    continue
-                if modified:
-                    try:
-                        mod_dt = datetime.fromisoformat(str(modified).replace("Z", "+00:00"))
-                        if mod_dt < timestamp:
-                            continue
-                    except ValueError:
-                        pass
-                seen.add(vid)
-                ids.append(vid)
-            next_token = data.get("next_page_token")
-            if not next_token:
-                break
-            payload["page_token"] = next_token
+            async for row in response.aiter_lines():
+                rows.append(row)
+                if len(rows) >= max_results + 1:
+                    break
+        ids = parse_modified_ids(rows, since=timestamp, limit=max_results)
         logger.info("osv list_modified_since", ecosystem=ecosystem, count=len(ids))
         return ids
 

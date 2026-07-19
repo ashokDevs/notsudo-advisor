@@ -18,7 +18,6 @@ from api import github_api
 from core.config import (
     app_base_url,
     get_settings,
-    github_auto_merge,
     github_demo_repo,
     is_production,
     session_https_only,
@@ -76,20 +75,7 @@ class AnalyzeRequest(BaseModel, extra="forbid"):
 
 
 class PRRequest(BaseModel, extra="forbid"):
-    id: str
-    pkg: str
-    current: str
-    fix: str
-    verdict: str | None = None
-    confidence: float | None = None
-    reasoning: str | None = None
-    quote: str | None = None
-    quoteSource: str | None = None
-    entrypoints: list[str] | None = None
-    evidence_quotes: list[dict[str, Any]] | None = None
-    target_repo: str | None = None
-    # When true, merge immediately after opening (overrides GITHUB_AUTO_MERGE if set)
-    auto_merge: bool | None = None
+    remediation_token: str
 
 
 class LocalFixRequest(BaseModel, extra="forbid"):
@@ -300,7 +286,8 @@ async def me(request: Request) -> JSONResponse:
             "public_url": app_base_url(),
             "online": is_production(),
             "oauth_callback": f"{app_base_url()}/auth/github/callback",
-            "auto_merge": bool(s.get("github_auto_merge")),
+            "auto_merge": False,
+            "auto_merge_requested": bool(s.get("github_auto_merge")),
             "merge_method": s.get("github_merge_method") or "squash",
         }
     )
@@ -321,6 +308,8 @@ async def github_status(request: Request) -> dict[str, Any]:
 
 @app.post("/api/pr")
 async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
+    from api.remediation import load_remediation_token
+
     token = github_api.resolve_write_token(request.session.get("gh_token"))
     if not token:
         raise HTTPException(
@@ -331,20 +320,25 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
                 "or Sign in with GitHub."
             ),
         )
-    if not req.fix:
-        raise HTTPException(status_code=400, detail=f"No fixed version known for {req.pkg}")
-    target = req.target_repo or github_demo_repo()
-    # Request can force merge; otherwise use GITHUB_AUTO_MERGE env
-    do_merge = github_auto_merge() if req.auto_merge is None else req.auto_merge
+    try:
+        plan = load_remediation_token(req.remediation_token, secret=session_secret())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     try:
         result = await github_api.open_fix_pr(
             str(token),
-            repo=target,
-            pkg=req.pkg,
-            current=req.current,
-            fix=req.fix,
-            advisory=req.model_dump(),
-            auto_merge=do_merge,
+            repo=plan.target_repo,
+            pkg=plan.package_name,
+            current=plan.current_version,
+            fix=plan.fixed_version,
+            advisory={
+                "id": ", ".join(plan.advisory_ids),
+                "verdict": "exposed",
+                "reasoning": plan.reasoning,
+                "entrypoints": plan.entrypoints,
+                "evidence_quotes": plan.evidence_quotes,
+            },
+            auto_merge=False,
         )
     except ValueError as exc:
         # Permission / validation errors — surface as 400 with clear text
@@ -377,7 +371,8 @@ async def health() -> dict[str, Any]:
         ),
         "github_pat": s["github_pat"],
         "demo_repo": s["github_demo_repo"],
-        "auto_merge": bool(s.get("github_auto_merge")),
+        "auto_merge": False,
+        "auto_merge_requested": bool(s.get("github_auto_merge")),
         "merge_method": s.get("github_merge_method") or "squash",
         "env_loaded": bool(s["env_file"]),
         "warnings": warnings,

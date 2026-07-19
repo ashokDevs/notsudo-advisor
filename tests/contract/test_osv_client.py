@@ -19,8 +19,8 @@ async def test_get_by_id_real(osv_client: OSVClient) -> None:
         pytest.skip("Skipping real HTTP test")
     
     # Real OSV record
-    data = await osv_client.get_by_id("GHSA-39hc-v8j9-pqp4")
-    assert data["id"] == "GHSA-39hc-v8j9-pqp4"
+    data = await osv_client.get_by_id("GHSA-29mw-wpgm-hmr9")
+    assert data["id"] == "GHSA-29mw-wpgm-hmr9"
 
 async def test_get_by_id_not_found(osv_client: OSVClient) -> None:
     if not os.getenv("RUN_REAL_HTTP"):

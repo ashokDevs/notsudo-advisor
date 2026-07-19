@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid5
+
+import httpx
 
 from core.ingestion.osv_client import OSVClient
+from core.observability.logging import get_logger
 from core.retrieval.embedder import Embedder
 from core.storage.database import Database
+
+logger = get_logger(__name__)
 
 
 class AdvisoryIngester:
@@ -38,7 +43,7 @@ class AdvisoryIngester:
 
                 await self.db.execute(
                     "insert_advisory",
-                    uuid4(),
+                    uuid5(NAMESPACE_URL, f"https://osv.dev/{osv_id}"),
                     osv_id,
                     package_name,
                     json.dumps(affected_ranges),
@@ -47,8 +52,8 @@ class AdvisoryIngester:
                     json.dumps(embedding) if embedding else None
                 )
                 upserted_count += 1
-            except Exception:
-                pass
+            except (httpx.HTTPError, OSError, RuntimeError, ValueError) as exc:
+                logger.warning("advisory ingestion failed", advisory_id=osv_id, error=str(exc))
 
         return upserted_count
 

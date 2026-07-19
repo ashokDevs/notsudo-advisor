@@ -157,25 +157,17 @@ function App() {
   }, []);
 
   const openPR = useCallback(async (a) => {
+    if (!a.remediation_token) {
+      setPrState(s => ({ ...s, [a.id]: { status: "error", message: "This finding is covered by another grouped remediation plan." } }));
+      return;
+    }
     setPrState(s => ({ ...s, [a.id]: { status: "loading" } }));
     try {
-      // Prefer the repo that was actually scanned (GitHub URL scans).
-      // Local demo_app falls back to GITHUB_DEMO_REPO via scanMeta / server.
-      const targetRepo = (scanMeta && scanMeta.pr_target_repo)
-        || (me && me.repo)
-        || null;
-      // Prefer server GITHUB_AUTO_MERGE; also request merge from UI when health says so
-      const wantMerge = !!(health && health.auto_merge) || !!(me && me.auto_merge);
       const res = await fetch("/api/pr", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          id: a.id, pkg: a.pkg, current: a.current, fix: a.fix,
-          verdict: a.verdict, confidence: a.confidence, reasoning: a.reasoning,
-          quote: a.quote, quoteSource: a.quoteSource, entrypoints: a.entrypoints,
-          evidence_quotes: a.evidence_quotes || [],
-          target_repo: targetRepo,
-          auto_merge: wantMerge,
+          remediation_token: a.remediation_token,
         }),
       });
       const data = await res.json();
@@ -931,7 +923,8 @@ function PRAction({ a, me, pr, onOpenPR, prTargetRepo }) {
   // Prefer scanned GitHub repo; else configured demo repo
   const target = prTargetRepo || (me && me.repo) || "GITHUB_DEMO_REPO";
 
-  const autoMerge = !!(me && me.auto_merge);
+  const hasPlan = !!a.remediation_token;
+  const autoMerge = false;
   if (pr && pr.status === "done") {
     return (
       <div className="pr-result pr-result--ok">
@@ -962,9 +955,9 @@ function PRAction({ a, me, pr, onOpenPR, prTargetRepo }) {
         )
       ) : (
         <button className={`btn btn--sm ${primary ? "btn--primary" : ""}`} style={{justifyContent:"center", opacity: pr?.status === "loading" ? 0.7 : 1}}
-                disabled={pr?.status === "loading" || !a.fix || a.verdict !== "exposed"} onClick={() => onOpenPR(a)}>
+                disabled={pr?.status === "loading" || !a.fix || !hasPlan || a.verdict !== "exposed"} onClick={() => onOpenPR(a)}>
           {pr?.status === "loading"
-            ? <span className="caret">{autoMerge ? "opening + merging" : "opening PR"}</span>
+            ? <span className="caret">opening PR</span>
             : a.verdict !== "exposed" ? "PR only for exposed"
             : !a.fix ? "No fix available"
             : autoMerge

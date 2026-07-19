@@ -36,7 +36,13 @@ NotSudo is an **agentic dependency security advisor**. It:
 3. **Finds call sites** in your source (imports + syntactic calls)  
 4. **Judges reachability** — `exposed` / `safe` / `unsure` — via heuristics or LLM (OpenRouter / OpenAI-compatible)  
 5. **Validates evidence quotes** against real file text (anti-hallucination)  
-6. **Opens a fix PR** on GitHub (scanned repo) and can **auto-merge** when configured  
+6. **Opens a lockfile-validated fix PR** on GitHub (scanned repo) for human review
+
+### Secure remediation flow
+
+Opening a fix PR is deliberately a server-authorized operation. A completed scan creates a short-lived, signed remediation plan that binds the scanned repository, dependency, safe version, validated evidence, and affected advisory IDs. The browser sends only that token back to the API, so it cannot alter a package, target repository, verdict, or evidence to manufacture a PR.
+
+For npm repositories, NotSudo resolves the change with `npm install --package-lock-only --ignore-scripts` before creating a PR. Both `package.json` and `package-lock.json` are updated, and the pull request always requires human review.
 
 ### Why it exists
 
@@ -193,7 +199,7 @@ notsudo-advisor/
    - `https://github.com/OWASP/NodeGoat`  
 3. Default filter: **exposed**  
 4. Expand a row → call sites `file:line` + reasoning  
-5. **Open fix PR** / **Apply fix (open + merge)** if `GITHUB_AUTO_MERGE=true`  
+5. **Open fix PR** after reviewing the cited evidence; merge through the repository's normal checks
 6. PRs open on the **scanned GitHub repo** (not a random demo repo, unless you only scanned local `demo_app`)
 
 ---
@@ -210,13 +216,33 @@ notsudo-advisor/
 | Heuristic fallback without LLM key | ✅ |
 | Evidence quote validation | ✅ |
 | GitHub URL clone → scan → cleanup | ✅ |
-| Fix PR on **scanned** repo | ✅ |
-| Auto-merge (`GITHUB_AUTO_MERGE`) | ✅ |
+| npm fix PR (manifest + `package-lock.json`) on **scanned** repo | ✅ |
+| Python remediation PR | Report-only (planned) |
+| Automatic PR opening after a validated scan | ✅ |
 | GitHub OAuth Sign in | ✅ |
 | PAT (`GITHUB_TOKEN`) without browser login | ✅ |
 | Capability isolation tests | ✅ |
 | Docker + Render deploy | ✅ |
 | CLI + eval harness | ✅ |
+
+---
+
+### Remediation support
+
+| Ecosystem | Detection and reachability | Fix PR |
+|---|---|---|
+| npm | Yes | Yes: `package.json` + `package-lock.json` |
+| PyPI | Yes | Report-only for now |
+
+Multiple exposed advisories for the same npm dependency are combined into one remediation plan using the highest required fixed version, avoiding competing PRs.
+
+### Safety guarantees
+
+- Advisory bodies are treated as untrusted data when used in prompts.
+- Evidence quotes must match real source files before a remediation plan is generated.
+- MCP draft authorization reads the node identity from server configuration, not an MCP caller argument.
+- GitHub PR creation is bound to a signed scan result; `GITHUB_AUTO_MERGE` is ignored and review is mandatory.
+- OSV change discovery uses its official reverse-chronological `modified_id.csv` feed. [OSV documentation](https://google.github.io/osv.dev/data/)
 
 ---
 
@@ -270,7 +296,7 @@ python -m cli.main demo
 | `GITHUB_TOKEN` | For PRs | Fine-grained PAT: **Contents + Pull requests = write** |
 | `GITHUB_DEMO_REPO` | Local demo PRs | Fallback when scanning local `demo_app` |
 | `GITHUB_CLIENT_ID` / `SECRET` | OAuth UI | GitHub OAuth App credentials |
-| `GITHUB_AUTO_MERGE` | Optional | `true` → open PR **and merge** |
+| `GITHUB_AUTO_MERGE` | Deprecated | Ignored; NotSudo requires human PR review |
 | `GITHUB_MERGE_METHOD` | Optional | `squash` (default) / `merge` / `rebase` |
 | `SESSION_SECRET` | Online yes | Long random string |
 | `NOTSUDO_HASH_EMBEDDINGS` | Optional | `1` skips heavy embedding model download |
@@ -288,7 +314,7 @@ python -m cli.main demo
 | `GET` | `/api/me` | Session user + config flags |
 | `GET` | `/api/github/status` | Can this token push/merge? |
 | `POST` | `/api/scan` | `{ "target": "owner/repo" \| path \| URL }` |
-| `POST` | `/api/pr` | Open fix PR (`auto_merge` optional) |
+| `POST` | `/api/pr` | Open a PR from a short-lived server-issued remediation token |
 | `GET` | `/auth/github/login` | Start OAuth |
 | `GET` | `/auth/github/callback` | OAuth return |
 
@@ -306,6 +332,10 @@ docker run --rm -p 8080:8080 --env-file .env \
 
 Or connect this repo to [Render](https://dashboard.render.com) with the included `Dockerfile` / `render.yaml`.  
 Details: **[docs/DEPLOY_ONLINE.md](docs/DEPLOY_ONLINE.md)**.
+
+### Render Free limitation
+
+Render Free is good for interactive scans, but an idle web service sleeps and cannot reliably host a continuous OSV worker. The `notsudo watch-osv` command reads the correct OSV change feed; schedule it with a Render Cron Job, GitHub Actions, or another scheduler when continuous monitoring is needed.
 
 ---
 
