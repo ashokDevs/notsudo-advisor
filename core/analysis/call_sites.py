@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -113,11 +114,15 @@ class CallSiteFinder:
 
     def _iter_files(self, repo: Path) -> list[Path]:
         out: list[Path] = []
-        for pattern in _CODE_GLOBS:
-            for f in repo.rglob(pattern):
-                if any(part in self.skip_dirs for part in f.parts):
-                    continue
-                out.append(f)
+        code_suffixes = {pattern.removeprefix("*") for pattern in _CODE_GLOBS}
+        for root, dirs, files in os.walk(repo):
+            # Prune before walking, rather than filtering Path.rglob results after
+            # it has already traversed .git and node_modules.
+            dirs[:] = sorted(directory for directory in dirs if directory not in self.skip_dirs)
+            root_path = Path(root)
+            for filename in sorted(files):
+                if Path(filename).suffix in code_suffixes:
+                    out.append(root_path / filename)
         return out
 
     def _site(

@@ -264,7 +264,7 @@ async def build_advisory_result(
 
     symbols = extract_vulnerable_symbols(info.name, summary, details, osv=vuln)
     finder = CallSiteFinder()
-    sites = finder.find(repo, info.name, symbols=symbols)
+    sites = await asyncio.to_thread(finder.find, repo, info.name, symbols=symbols)
     reach = await assess_reachability(
         repo=repo,
         package_name=info.name,
