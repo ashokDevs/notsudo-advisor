@@ -87,7 +87,7 @@ flowchart TB
   AGENT --> LLM
   MCP --> GH
   LLM --> OR
-  API -->|fix PR / auto-merge| GH
+  API -->|validated fix PR| GH
 ```
 
 ### Scan & fix data flow
@@ -105,9 +105,7 @@ flowchart LR
   H -->|exposed| I[Preflight + PR draft]
   H -->|safe / unsure| J[Report only]
   I --> K[GitHub fix PR]
-  K --> L{GITHUB_AUTO_MERGE?}
-  L -->|yes| M[Merge into default branch]
-  L -->|no| N[Human reviews PR]
+  K --> N[Human review + repository checks]
 ```
 
 ### LangGraph agent nodes
@@ -241,7 +239,7 @@ Multiple exposed advisories for the same npm dependency are combined into one re
 - Advisory bodies are treated as untrusted data when used in prompts.
 - Evidence quotes must match real source files before a remediation plan is generated.
 - MCP draft authorization reads the node identity from server configuration, not an MCP caller argument.
-- GitHub PR creation is bound to a signed scan result; `GITHUB_AUTO_MERGE` is ignored and review is mandatory.
+- GitHub PR creation is bound to a signed scan result and review is mandatory.
 - OSV change discovery uses its official reverse-chronological `modified_id.csv` feed. [OSV documentation](https://google.github.io/osv.dev/data/)
 
 ---
@@ -296,8 +294,6 @@ python -m cli.main demo
 | `GITHUB_TOKEN` | For PRs | Fine-grained PAT: **Contents + Pull requests = write** |
 | `GITHUB_DEMO_REPO` | Local demo PRs | Fallback when scanning local `demo_app` |
 | `GITHUB_CLIENT_ID` / `SECRET` | OAuth UI | GitHub OAuth App credentials |
-| `GITHUB_AUTO_MERGE` | Deprecated | Ignored; NotSudo requires human PR review |
-| `GITHUB_MERGE_METHOD` | Optional | `squash` (default) / `merge` / `rebase` |
 | `SESSION_SECRET` | Online yes | Long random string |
 | `NOTSUDO_HASH_EMBEDDINGS` | Optional | `1` skips heavy embedding model download |
 

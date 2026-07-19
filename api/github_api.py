@@ -13,9 +13,7 @@ import httpx
 
 from core.config import (
     app_base_url,
-    github_auto_merge,
     github_demo_repo,
-    github_merge_method,
     github_oauth_credentials,
     github_token,
 )
@@ -368,8 +366,6 @@ async def open_fix_pr(
     current: str,
     fix: str,
     advisory: dict[str, Any],
-    auto_merge: bool | None = None,
-    merge_method: str | None = None,
 ) -> dict[str, Any]:
     """
     Open a version-bump fix PR after resolving both the manifest and lockfile.
@@ -377,11 +373,6 @@ async def open_fix_pr(
     Auto-merge is deliberately disabled. A dependency PR must pass the target
     repository's checks and be reviewed before it changes a default branch.
     """
-    if auto_merge or github_auto_merge():
-        logger.warning("auto-merge request ignored; human review is required", repo=repo)
-    do_merge = False
-    method = merge_method or github_merge_method()
-
     headers = _auth_headers(token)
     advisory_id = str(advisory.get("id", "fix"))
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", advisory_id).strip("-").lower()[:24]
@@ -517,31 +508,8 @@ async def open_fix_pr(
             "number": number,
             "branch": branch,
             "reused": reused,
-            "merged": False,
-            "merge_commit_sha": None,
-            "auto_merge": do_merge,
             "base_branch": default_branch,
         }
-
-        if do_merge:
-            merge_title = f"fix({pkg}): bump {current} -> {fix} ({advisory_id})"
-            merge_data = await _merge_pull_request(
-                client,
-                repo=repo,
-                number=number,
-                title=merge_title,
-                method=method,
-            )
-            result["merged"] = bool(merge_data.get("merged", True))
-            result["merge_commit_sha"] = merge_data.get("sha")
-            result["merge_method"] = method
-            logger.info(
-                "auto-merged fix PR",
-                repo=repo,
-                number=number,
-                method=method,
-                sha=result["merge_commit_sha"],
-            )
 
     return result
 

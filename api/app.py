@@ -286,9 +286,6 @@ async def me(request: Request) -> JSONResponse:
             "public_url": app_base_url(),
             "online": is_production(),
             "oauth_callback": f"{app_base_url()}/auth/github/callback",
-            "auto_merge": False,
-            "auto_merge_requested": bool(s.get("github_auto_merge")),
-            "merge_method": s.get("github_merge_method") or "squash",
         }
     )
 
@@ -338,7 +335,6 @@ async def create_pr(request: Request, req: PRRequest) -> dict[str, Any]:
                 "entrypoints": plan.entrypoints,
                 "evidence_quotes": plan.evidence_quotes,
             },
-            auto_merge=False,
         )
     except ValueError as exc:
         # Permission / validation errors — surface as 400 with clear text
@@ -371,9 +367,6 @@ async def health() -> dict[str, Any]:
         ),
         "github_pat": s["github_pat"],
         "demo_repo": s["github_demo_repo"],
-        "auto_merge": False,
-        "auto_merge_requested": bool(s.get("github_auto_merge")),
-        "merge_method": s.get("github_merge_method") or "squash",
         "env_loaded": bool(s["env_file"]),
         "warnings": warnings,
         "config_ok": len(warnings) == 0,

@@ -404,8 +404,8 @@ function ConfigBar({ health, me, scanMeta }) {
         {me && me.user ? `signed in as ${me.user.login}` : pat ? "PAT ready for PRs" : "no PR write creds"}
       </span>
       <span className="sep">·</span>
-      <span className={(health?.auto_merge || me?.auto_merge) ? "ok" : "dim"}>
-        {(health?.auto_merge || me?.auto_merge) ? "auto-merge ON" : "auto-merge off"}
+      <span className="ok">
+        human review required
       </span>
       {scanMeta?.llm_enabled != null && (
         <>
