@@ -34,7 +34,8 @@ app = FastAPI(title="NotSudo Advisor", version="0.4.0")
 try:
     from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
-    app.add_middleware(ProxyHeadersMiddleware, trusted_hosts="*")  # type: ignore[arg-type]
+    proxy_headers_middleware: Any = ProxyHeadersMiddleware
+    app.add_middleware(proxy_headers_middleware, trusted_hosts="*")
 except Exception:
     pass
 
