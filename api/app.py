@@ -129,7 +129,7 @@ def _public_base(request: Request) -> str:
 
 @app.post("/api/scan")
 async def scan(req: ScanRequest) -> dict[str, Any]:
-    from api.scanner import scan_repo
+    from api.scanner import ScanDeadlineExceeded, scan_repo
 
     target = (req.target or req.repo_path or "").strip()
     if not target:
@@ -151,6 +151,8 @@ async def scan(req: ScanRequest) -> dict[str, Any]:
         result["llm_enabled"] = get_llm_client().available
         result["llm_provider"] = get_settings()["llm_provider"]
         return result
+    except ScanDeadlineExceeded as exc:
+        raise HTTPException(status_code=504, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except httpx.HTTPError as exc:
@@ -368,6 +370,7 @@ async def health() -> dict[str, Any]:
         ),
         "github_pat": s["github_pat"],
         "demo_repo": s["github_demo_repo"],
+        "release_version": s["release_version"],
         "env_loaded": bool(s["env_file"]),
         "warnings": warnings,
         "config_ok": len(warnings) == 0,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from api.remediation import RemediationPlan, issue_remediation_token
@@ -11,6 +12,13 @@ from core.llm.client import LLMClient
 from core.observability.logging import get_logger
 
 logger = get_logger(__name__)
+
+_HOSTED_SCAN_DEADLINE_S = 45.0
+_HOSTED_MAX_ADVISORIES = 3
+
+
+class ScanDeadlineExceeded(ValueError):
+    """Raised before a hosting proxy terminates an overlong scan request."""
 
 
 def _attach_remediation_plans(result: dict[str, Any], target_repo: str) -> None:
@@ -87,12 +95,18 @@ async def scan_repo(repo_path: str) -> dict[str, Any]:
         # A public web request has a hard gateway deadline. Use deterministic
         # structural reachability for its first pass, then validate the exact
         # npm lockfile at the GitHub PR boundary before a change is written.
-        result = await analyze_repo(
-            str(target.path),
-            llm=LLMClient(api_key="") if hosted_scan else None,
-            run_preflight=not hosted_scan,
-            max_advisories=10 if hosted_scan else 20,
-        )
+        try:
+            async with asyncio.timeout(_HOSTED_SCAN_DEADLINE_S if hosted_scan else None):
+                result = await analyze_repo(
+                    str(target.path),
+                    llm=LLMClient(api_key="") if hosted_scan else None,
+                    run_preflight=not hosted_scan,
+                    max_advisories=_HOSTED_MAX_ADVISORIES if hosted_scan else 20,
+                )
+        except TimeoutError as exc:
+            raise ScanDeadlineExceeded(
+                "Scan exceeded the hosted-service time limit. Try a smaller repository or retry shortly."
+            ) from exc
         # Prefer GitHub-style display name when we cloned
         if target.source == "github":
             result["repo"] = target.display_name
@@ -112,6 +126,11 @@ async def scan_repo(repo_path: str) -> dict[str, Any]:
         result["display_name"] = target.display_name
         result["scan_target"] = repo_path
         result["scan_mode"] = "hosted_fast" if hosted_scan else "full"
+        if hosted_scan and result.get("scan_status") == "findings":
+            result["scan_message"] = (
+                f"Hosted quick scan returns up to {_HOSTED_MAX_ADVISORIES} findings; "
+                "run NotSudo locally for the complete advisory set."
+            )
         # Summary helpers for the win-demo UI
         ads = result.get("advisories") or []
         result["summary"] = {

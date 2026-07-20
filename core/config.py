@@ -154,6 +154,11 @@ def github_demo_repo() -> str:
     return _env("GITHUB_DEMO_REPO") or "ashokDevs/notsudo-demo-app"
 
 
+def release_version() -> str:
+    """Best-effort immutable deployment identifier for operational diagnostics."""
+    return _env("RENDER_GIT_COMMIT") or _env("GIT_COMMIT") or "unknown"
+
+
 def github_auto_merge() -> bool:
     """
     When true, open_fix_pr merges the PR immediately after creation.
@@ -226,6 +231,7 @@ def get_settings() -> dict[str, str | bool | None | list[str]]:
         "github_client_secret_set": bool(_env("GITHUB_CLIENT_SECRET")),
         "github_pat": bool(github_token()),
         "github_demo_repo": github_demo_repo(),
+        "release_version": release_version(),
         "github_auto_merge": github_auto_merge(),
         "github_merge_method": github_merge_method(),
         "app_base_url": app_base_url(),
