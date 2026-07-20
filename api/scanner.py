@@ -6,7 +6,8 @@ from api.remediation import RemediationPlan, issue_remediation_token
 from core.analysis.github_clone import cleanup_target, resolve_scan_target
 from core.analysis.pipeline import analyze_repo
 from core.analysis.semver import compare_versions
-from core.config import session_secret
+from core.config import is_production, session_secret
+from core.llm.client import LLMClient
 from core.observability.logging import get_logger
 
 logger = get_logger(__name__)
@@ -25,12 +26,9 @@ def _attach_remediation_plans(result: dict[str, Any], target_repo: str) -> None:
     for advisory in advisories:
         if not isinstance(advisory, dict):
             continue
-        preflight = advisory.get("preflight")
         if (
             advisory.get("verdict") != "exposed"
             or not advisory.get("fix")
-            or not isinstance(preflight, dict)
-            or preflight.get("ok") is not True
         ):
             continue
         package_name = advisory.get("pkg")
@@ -85,7 +83,16 @@ async def scan_repo(repo_path: str) -> dict[str, Any]:
 
     target = await resolve_scan_target(repo_path)
     try:
-        result = await analyze_repo(str(target.path), run_preflight=True)
+        hosted_scan = is_production()
+        # A public web request has a hard gateway deadline. Use deterministic
+        # structural reachability for its first pass, then validate the exact
+        # npm lockfile at the GitHub PR boundary before a change is written.
+        result = await analyze_repo(
+            str(target.path),
+            llm=LLMClient(api_key="") if hosted_scan else None,
+            run_preflight=not hosted_scan,
+            max_advisories=10 if hosted_scan else 20,
+        )
         # Prefer GitHub-style display name when we cloned
         if target.source == "github":
             result["repo"] = target.display_name
@@ -104,6 +111,7 @@ async def scan_repo(repo_path: str) -> dict[str, Any]:
         _attach_remediation_plans(result, str(result["pr_target_repo"]))
         result["display_name"] = target.display_name
         result["scan_target"] = repo_path
+        result["scan_mode"] = "hosted_fast" if hosted_scan else "full"
         # Summary helpers for the win-demo UI
         ads = result.get("advisories") or []
         result["summary"] = {

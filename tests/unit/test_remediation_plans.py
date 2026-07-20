@@ -57,3 +57,15 @@ def test_python_scan_does_not_offer_an_npm_only_fix_plan() -> None:
     _attach_remediation_plans(result, "owner/repo")
 
     assert result["remediation_plans"] == []
+
+
+def test_hosted_scan_can_offer_plan_before_lockfile_preflight() -> None:
+    result: dict[str, Any] = {
+        "ecosystem": "npm",
+        "advisories": [_advisory("GHSA-test", "4.17.21")],
+    }
+    result["advisories"][0]["preflight"] = None
+
+    _attach_remediation_plans(result, "owner/repo")
+
+    assert len(result["remediation_plans"]) == 1
